@@ -5,6 +5,7 @@ auto-saves edits safely (see store.py: backups, verified atomic writes, merging 
 made by other devices or apps).
 Run:  python vault.py
 """
+import hashlib
 import os
 from collections import Counter
 import sys
@@ -952,9 +953,14 @@ class VaultView(QWidget):
             items[f["id"]] = item
         self.tree.expandAll()
         self._set_tree_icons()
-        if keep_state and folder in items:
+        if not keep_state:  # opening the database: go back to the folder used last time,
+            folder = self._remembered_folder(db)  # unless it has since been moved to the Recycle Bin
+            if folder in items and folder != db.bin_id and items[folder].data(0, Qt.UserRole + 1):
+                folder = None
+        if folder in items:
             self.folder = folder
             self.tree.setCurrentItem(items[folder])
+            self.tree.scrollToItem(items[folder])
         else:
             self.tree.setCurrentItem(root_item)
         self.tree.blockSignals(False)
@@ -996,10 +1002,20 @@ class VaultView(QWidget):
             item.setIcon(0, ico.icon())
             it += 1
 
+    @staticmethod
+    def _folder_key(db):
+        # One remembered folder per database file (keys can't contain the path itself).
+        return "last_folder/" + hashlib.sha1(os.path.normcase(os.path.abspath(db.path)).encode()).hexdigest()[:16]
+
+    def _remembered_folder(self, db):
+        return setting(self._folder_key(db), "") or None
+
     def _on_folder(self, item, _previous):
         if item is None:
             return
         self.folder = item.data(0, Qt.UserRole)
+        if self.db is not None:
+            settings.setValue(self._folder_key(self.db), self.folder or "")
         self.search.blockSignals(True)
         self.search.clear()
         self.search.blockSignals(False)

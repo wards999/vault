@@ -18,7 +18,7 @@ jobs:
       - name: Build
         shell: pwsh
         run: ./build.ps1
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: Vault-windows
           path: dist/Vault-portable.zip
@@ -32,7 +32,7 @@ jobs:
           python-version: "3.13"
       - name: Build
         run: bash build_mac.sh
-      - uses: actions/upload-artifact@v5
+      - uses: actions/upload-artifact@v6
         with:
           name: Vault-mac
           path: dist/Vault-mac.zip
