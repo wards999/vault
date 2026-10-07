@@ -18,14 +18,17 @@ TOP, BOTTOM = QColor("#23bac6"), QColor("#06566e")  # teal, matching the default
 WHITE = QColor("#ffffff")
 
 
-def draw(size=1024, mac_grid=True, simple=False):
+def draw(size=1024, mac_grid=True, simple=False, square=False):
     """The icon at `size` px. mac_grid: Apple's margins and shadow; otherwise edge to edge.
-    simple: bolder lines and no dial ticks, for tiny sizes (16-32 px)."""
+    simple: bolder lines and no dial ticks, for tiny sizes (16-32 px).
+    square: fills the whole square with no rounded corners (iOS/iPadOS round the corners themselves)."""
     img = QImage(size, size, QImage.Format_ARGB32)
     img.fill(Qt.transparent)
     p = QPainter(img)
     p.setRenderHint(QPainter.Antialiasing)
     s = size / 1024
+    if square:
+        mac_grid = False
     if mac_grid:
         body = QRectF(100 * s, 90 * s, 824 * s, 824 * s)
         for i in range(12, 0, -1):  # soft shadow
@@ -33,10 +36,14 @@ def draw(size=1024, mac_grid=True, simple=False):
             p.setBrush(QColor(0, 0, 0, 5))
             p.drawRoundedRect(body.adjusted(-i * s, -i * s + 10 * s, i * s, i * s + 14 * s),
                               185 * s + i * s, 185 * s + i * s)
+    elif square:
+        body = QRectF(0, 0, size, size)
     else:
         body = QRectF(16 * s, 16 * s, 992 * s, 992 * s)
     u = body.width() / 824  # design units: everything below is laid out on the 824 px body
-    radius = 185 * u
+    radius = 0 if square else 185 * u
+    if square:
+        u *= 0.86  # keep the artwork clear of the corners iPadOS rounds off
 
     gradient = QLinearGradient(body.topLeft(), body.bottomRight())
     gradient.setColorAt(0, TOP)
@@ -52,7 +59,8 @@ def draw(size=1024, mac_grid=True, simple=False):
 
     # safe door outline with two hinges on the left
     inset, stroke = (130, 76) if simple else (118, 40)
-    door = body.adjusted(inset * u, inset * u, -inset * u, -inset * u)
+    pad = body.width() * 0.19 if square else inset * u  # square: clear of the corners iPadOS rounds
+    door = body.adjusted(pad, pad, -pad, -pad)
     p.setBrush(Qt.NoBrush)
     p.setPen(QPen(WHITE, stroke * u))
     p.drawRoundedRect(door, 70 * u, 70 * u)
