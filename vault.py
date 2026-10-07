@@ -2727,6 +2727,8 @@ class MainWindow(FluentWindow):
 
     def __init__(self):
         super().__init__()
+        if sys.platform == "darwin":
+            self._use_mac_window_controls()
         self.stackedWidget.setAnimationEnabled(False)  # switch pages instantly (no 0.25 s slide)
         self.privacy_cover = PrivacyCover(self)
         self.setWindowTitle("Vault")
@@ -2758,6 +2760,24 @@ class MainWindow(FluentWindow):
             screen = QApplication.primaryScreen().availableGeometry()
             self.move(screen.center() - self.rect().center())
         QApplication.instance().aboutToQuit.connect(self.save_geometry)
+
+    def _use_mac_window_controls(self):
+        """macOS: the native traffic-light buttons at the top left, like every Mac app, instead of the
+        Windows-style buttons the UI library draws on the right."""
+        try:
+            self.setSystemTitleBarButtonVisible(True)
+        except Exception:  # keep the drawn buttons rather than have none
+            return
+        bar = self.titleBar
+        for button in (bar.minBtn, bar.maxBtn, bar.closeBtn):
+            button.hide()
+        bar.iconLabel.hide()  # Mac windows don't show an icon in the title bar
+        # The traffic lights take the top-left ~75 px (the title bar starts 46 px in) and sit in
+        # the top 28 px: start the title after them and centre it on their row.
+        bar.hBoxLayout.setContentsMargins(36, 0, 0, 20)
+        # The sidebar's Back arrow sat where the traffic lights go; Vault doesn't need page history.
+        self.navigationInterface.setReturnButtonVisible(False)
+        self.navigationInterface.panel.vBoxLayout.setContentsMargins(0, 34, 0, 5)
 
     # ---- hiding contents when minimised
 
@@ -2916,7 +2936,9 @@ if __name__ == "__main__":
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Vault.PasswordManager")
     app = QApplication(sys.argv)
-    app.setWindowIcon(QIcon(str(RESOURCE_DIR / "icons" / "vault_app.png")))
+    # On macOS this is also the Dock icon, so use the version drawn on Apple's icon grid (with its
+    # margin and shadow); the edge-to-edge version looks oversized next to other Mac apps.
+    app.setWindowIcon(QIcon(str(RESOURCE_DIR / "icons" / ("vault.png" if sys.platform == "darwin" else "vault_app.png"))))
     apply_theme(theme_name())
     window = MainWindow()
     apply_theme(theme_name(), window)
