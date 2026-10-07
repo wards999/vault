@@ -27,7 +27,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout, QTreeWidgetItem, QTreeWidgetItemIterator,
     QFileDialog, QHeaderView, QAbstractItemView, QSplitter, QSplitterHandle, QLineEdit, QTableWidgetItem,
-    QStyledItemDelegate, QDialog, QCompleter,
+    QStyledItemDelegate, QDialog,
 )
 from qfluentwidgets import (
     FluentWindow, NavigationItemPosition, FluentIcon as FIF, setTheme, Theme,
@@ -37,9 +37,8 @@ from qfluentwidgets import (
     PushButton, PrimaryPushButton, SwitchButton, CheckBox, Slider, ProgressBar,
     SegmentedWidget, InfoBar, InfoBarIcon, InfoBarPosition, MessageBox, MessageBoxBase, TreeWidget,
     TableView, RoundMenu, Action, qconfig, getFont, SmoothMode, ComboBox, setCustomStyleSheet,
-    setThemeColor, themeColor, ProgressRing, CardWidget, TableWidget, ScrollArea,
+    setThemeColor, themeColor, ProgressRing, ListWidget, CardWidget, TableWidget, ScrollArea,
 )
-from qfluentwidgets.components.widgets.line_edit import CompleterMenu
 from qfluentwidgets.components.widgets.table_view import TableItemDelegate
 
 import favicon
@@ -1605,7 +1604,6 @@ class EntryEditor(MessageBoxBase):
         self.title.setPlaceholderText("e.g. GitHub")
         self.username = LineEdit()
         self.username.setText(raw["username"])
-        self._username_completer()
         self.url = LineEdit()
         self.url.setText(raw["url"])
         self.url.setPlaceholderText("https://")
@@ -1615,6 +1613,7 @@ class EntryEditor(MessageBoxBase):
 
         self._field("Title", self.title)
         self._field("Username", self.username)
+        self._setup_username_suggestions()
 
         self.form.addWidget(caption("Password"))
         row = QHBoxLayout()
@@ -1689,37 +1688,81 @@ class EntryEditor(MessageBoxBase):
         self.form.addWidget(caption(label))
         self.form.addWidget(widget)
 
-    def _username_completer(self):
-        """Suggests usernames already used in the database (most used first), e.g. email addresses."""
+    # ---- username suggestions
+    # Shown as a small list inside the dialog, under the field. (A pop-up suggestion menu
+    # captures the next click anywhere, so the first click on Cancel only closed the menu.)
+
+    SUGGESTION_ROWS = 5
+    SUGGESTION_ROW_HEIGHT = 30
+
+    def _setup_username_suggestions(self):
         counts = Counter(e["raw"]["username"] for e in self.db.entries
                          if not e["in_bin"] and e["raw"]["username"] and not e["raw"]["username"].startswith("{REF:"))
-        if not counts:
+        self._usernames = [name for name, _ in counts.most_common()]  # most used first
+        self.suggestions = ListWidget()
+        self.suggestions.setFocusPolicy(Qt.NoFocus)  # typing stays in the Username field
+        self.suggestions.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.suggestions.itemClicked.connect(lambda item: self._use_suggestion(item.text()))
+        setCustomStyleSheet(
+            self.suggestions,
+            "ListWidget { border: 1px solid rgba(0, 0, 0, 0.12); border-radius: 6px; background: rgba(255, 255, 255, 0.9); }",
+            "ListWidget { border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 6px; background: rgba(255, 255, 255, 0.05); }")
+        self.suggestions.hide()
+        self.form.addWidget(self.suggestions)
+        if not self._usernames:
             return
-        completer = QCompleter([name for name, _ in counts.most_common()], self.username)
-        completer.setCaseSensitivity(Qt.CaseInsensitive)
-        completer.setFilterMode(Qt.MatchContains)  # "gmail" finds you@gmail.com
-        completer.setModelSorting(QCompleter.UnsortedModel)
-        completer.setMaxVisibleItems(8)
-        self.username.setCompleter(completer)
-        self.username.installEventFilter(self)  # show suggestions on focus when empty
+        self.username.textEdited.connect(lambda _: self._update_suggestions())
+        self.username.installEventFilter(self)
+
+    def _update_suggestions(self):
+        text = self.username.text().strip().lower()
+        matches = [n for n in self._usernames if text in n.lower() and n.lower() != text][:self.SUGGESTION_ROWS]
+        if not matches or not self.username.hasFocus():
+            self._hide_suggestions()
+            return
+        self.suggestions.clear()
+        self.suggestions.addItems(matches)
+        for i in range(self.suggestions.count()):
+            self.suggestions.item(i).setSizeHint(QSize(0, self.SUGGESTION_ROW_HEIGHT))
+        self.suggestions.setFixedHeight(len(matches) * self.SUGGESTION_ROW_HEIGHT + 8)
+        if not self.suggestions.isVisible():
+            self.suggestions.show()
+            self._fit()
+
+    def _hide_suggestions(self):
+        if self.suggestions.isVisible():
+            self.suggestions.hide()
+            self._fit()
+
+    def _use_suggestion(self, name):
+        self.username.setText(name)
+        self.username.setFocus()
+        self._hide_suggestions()
 
     def eventFilter(self, obj, event):
-        if obj is getattr(self, "username", None) and event.type() == QEvent.FocusIn and not obj.text():
-            completer = obj.completer()
-            if completer is not None:
-                completer.setCompletionPrefix("")
-                QTimer.singleShot(0, lambda: obj.text() or self._show_username_suggestions())
+        if obj is getattr(self, "username", None):
+            kind = event.type()
+            if kind == QEvent.FocusIn:
+                QTimer.singleShot(0, self._update_suggestions)
+            elif kind == QEvent.FocusOut:
+                self._hide_suggestions()
+            elif kind == QEvent.KeyPress and self.suggestions.isVisible():
+                key, rows, row = event.key(), self.suggestions.count(), self.suggestions.currentRow()
+                if key == Qt.Key_Down:
+                    self.suggestions.setCurrentRow(min(row + 1, rows - 1))
+                    return True
+                if key == Qt.Key_Up:
+                    self.suggestions.setCurrentRow(max(row - 1, -1))
+                    if row - 1 < 0:
+                        self.suggestions.clearSelection()
+                    return True
+                if key in (Qt.Key_Return, Qt.Key_Enter) and row >= 0:
+                    self._use_suggestion(self.suggestions.item(row).text())
+                    return True
+                if key == Qt.Key_Escape:  # hide the list, don't close the dialog
+                    self._hide_suggestions()
+                    return True
         return super().eventFilter(obj, event)
-
-    def _show_username_suggestions(self):
-        """The fluent LineEdit only pops up suggestions once something is typed; show them all here."""
-        line, completer = self.username, self.username.completer()
-        if not line._completerMenu:
-            line.setCompleterMenu(CompleterMenu(line))
-        completer.setCompletionPrefix("")
-        line._completerMenu.setCompletion(completer.completionModel(), completer.completionColumn())
-        line._completerMenu.setMaxVisibleItems(completer.maxVisibleItems())
-        line._completerMenu.popup()
 
     def entry_raw(self, name):
         return self.entry["raw"][name] if self.entry else ""
