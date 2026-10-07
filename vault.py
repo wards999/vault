@@ -10,21 +10,22 @@ import sys
 import threading
 import time
 import uuid as uuidlib
+from datetime import datetime
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from pykeepass.exceptions import CredentialsError, HeaderChecksumError, PayloadChecksumError
 from PySide6.QtCore import (
     Qt, QAbstractTableModel, QEvent, QModelIndex, QObject, QRect, QSettings, QSize,
     QTimer, QUrl, Signal, QMimeData, QByteArray,
 )
 from PySide6.QtGui import (
     QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QInputMethodEvent, QKeySequence,
-    QPainter, QPen, QPixmap, QShortcut, QTextCharFormat,
+    QPainter, QPalette, QPen, QPixmap, QShortcut, QTextCharFormat,
 )
 from PySide6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout, QTreeWidgetItem, QTreeWidgetItemIterator,
     QFileDialog, QHeaderView, QAbstractItemView, QSplitter, QSplitterHandle, QLineEdit, QTableWidgetItem,
+    QStyledItemDelegate, QDialog,
 )
 from qfluentwidgets import (
     FluentWindow, NavigationItemPosition, FluentIcon as FIF, setTheme, Theme,
@@ -122,6 +123,25 @@ def setting(key, default):
     if isinstance(default, bool):
         return value in (True, "true", "1", 1)
     return value
+
+
+def make_dialogs_instant():
+    """The UI library fades every dialog in (0.2 s) and out (0.1 s), which makes the app feel slow
+    to respond. Show and close them instantly instead (applies to all its dialogs)."""
+    from qfluentwidgets.components.dialog_box.mask_dialog_base import MaskDialogBase
+
+    def show_event(self, event):
+        QDialog.showEvent(self, event)
+
+    def done(self, code):
+        self.setGraphicsEffect(None)
+        QDialog.done(self, code)
+
+    MaskDialogBase.showEvent = show_event
+    MaskDialogBase.done = done
+
+
+make_dialogs_instant()
 
 
 def google_drive_folder():
@@ -245,6 +265,12 @@ def char_kind(ch):
     return "symbol"
 
 
+R_DISPLAY, R_DECORATION, R_TOOLTIP, R_FOREGROUND, R_USER = (
+    Qt.DisplayRole.value, Qt.DecorationRole.value, Qt.ToolTipRole.value, Qt.ForegroundRole.value, Qt.UserRole.value)
+_DATA_ROLES = frozenset((R_DISPLAY, R_DECORATION, R_TOOLTIP, R_FOREGROUND, R_USER))
+EXPIRED_COLOR = QColor("#a0a0a0")
+
+
 class EntryDelegate(TableItemDelegate):
     """Draws revealed passwords in a monospaced font, colour-coded by character type."""
 
@@ -257,15 +283,26 @@ class EntryDelegate(TableItemDelegate):
         self.mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
         self.mono.setFamilies(["Cascadia Mono", "Consolas", "Menlo", "SF Mono", self.mono.family()])
         self.mono.setPixelSize(14)
+        self.font = getFont(13)
+        self._update_text_color()
+        qconfig.themeChanged.connect(self._update_text_color)
+
+    def _update_text_color(self):
+        self.text_color = QColor(Qt.white if isDarkTheme() else Qt.black)
 
     def _is_revealed_password(self, index):
-        if index.column() != EntryModel.PASSWORD:
+        if index.column() != 2:  # EntryModel.PASSWORD
             return False
-        e = self.model.data(index, Qt.UserRole)
-        return bool(e and e["password"] and self.model.is_revealed(e))
+        e = self.model.entries[index.row()]
+        return bool(e["password"] and self.model.is_revealed(e))
 
     def initStyleOption(self, option, index):
-        super().initStyleOption(option, index)
+        # Replaces the UI library's version, which builds a new font for every cell painted.
+        QStyledItemDelegate.initStyleOption(self, option, index)
+        option.font = self.font
+        color = self.model.data(index, R_FOREGROUND) or self.text_color
+        option.palette.setColor(QPalette.Text, color)
+        option.palette.setColor(QPalette.HighlightedText, color)
         if self._is_revealed_password(index):
             option.text = ""  # drawn by paint() instead
 
@@ -493,9 +530,12 @@ class EntryModel(QAbstractTableModel):
     def columnCount(self, parent=QModelIndex()):
         return 0 if parent.isValid() else len(self.COLUMNS)
 
+    # Precomputed: combining Qt flags in Python is slow and flags() runs for every cell painted.
+    FLAGS = Qt.ItemIsSelectable | Qt.ItemIsEnabled | Qt.ItemNeverHasChildren
+    DRAG_FLAGS = FLAGS | Qt.ItemIsDragEnabled
+
     def flags(self, index):
-        flags = super().flags(index)
-        return flags | Qt.ItemIsDragEnabled if self.draggable and index.isValid() else flags
+        return self.DRAG_FLAGS if self.draggable else self.FLAGS
 
     def mimeTypes(self):
         return [ENTRY_MIME]
@@ -511,37 +551,37 @@ class EntryModel(QAbstractTableModel):
             return self.COLUMNS[section]
         return None
 
-    def data(self, index, role=Qt.DisplayRole):
-        if not index.isValid():
+    def data(self, index, role=R_DISPLAY):
+        # Called tens of thousands of times while scrolling, so: compare roles as plain ints
+        # (comparing Qt enums in Python is ~70x slower) and return early for unused roles.
+        if type(role) is not int:
+            role = role.value
+        if role not in _DATA_ROLES:
             return None
         e = self.entries[index.row()]
         col = index.column()
-        if role == Qt.UserRole:
-            return e
-        if role == Qt.DisplayRole:
-            if col == self.TITLE:
-                return e["title"]
-            if col == self.USERNAME:
-                return e["username"]
-            if col == self.PASSWORD:
+        if role == R_DISPLAY:
+            if col == 2:  # PASSWORD
                 return (e["password"] if self.is_revealed(e) else MASK) if e["password"] else ""
-            if col == self.WEBSITE:
-                return e["url"]
-            if col == self.FOLDER:
-                return e["folder"]
-            if col == self.MODIFIED:
-                return e["modified"]
-        if role == Qt.DecorationRole and col == self.TITLE:
+            cells = e.get("_cells")
+            if cells is None:
+                cells = e["_cells"] = (e["title"], e["username"], "", e["url"], e["folder"], e["modified"])
+            return cells[col]
+        if role == R_USER:
+            return e
+        if role == R_DECORATION:
+            if col != 0:
+                return None
             return self.icons.get(e) if self.icons else avatar_icon(e["title"])
-        if role == Qt.ToolTipRole:
-            if col == self.TITLE and e["expired"]:
+        if role == R_FOREGROUND:
+            return EXPIRED_COLOR if e["expired"] else None
+        if role == R_TOOLTIP:
+            if col == 0 and e["expired"]:
                 return "This entry has expired"
-            if col in (self.USERNAME, self.PASSWORD):
+            if col in (1, 2):
                 return "Double-click to copy and minimise"
-            if col == self.WEBSITE and e["url"]:
+            if col == 3 and e["url"]:
                 return f"{e['url']}\nDouble-click to open"
-        if role == Qt.ForegroundRole and e["expired"]:
-            return QColor("#a0a0a0")
         return None
 
 
@@ -799,6 +839,10 @@ class VaultView(QWidget):
         self.reveal = TransparentTogglePushButton(FIF.VIEW, "Show passwords")
         self.reveal.toggled.connect(self._on_reveal)
         head.addWidget(self.reveal, 0, Qt.AlignVCenter)
+        self.check_btn = TransparentToolButton(FIF.SYNC)
+        self.check_btn.setToolTip("Check for changes made on other devices or apps (F5)")
+        self.check_btn.clicked.connect(self.check_for_changes)
+        head.addWidget(self.check_btn, 0, Qt.AlignVCenter)
         self.new_btn = PrimaryPushButton(FIF.ADD, "New entry")
         self.new_btn.setToolTip("New entry (Ctrl+N)")
         self.new_btn.clicked.connect(self.new_entry)
@@ -806,6 +850,7 @@ class VaultView(QWidget):
         right.addLayout(head)
         local_shortcut("Ctrl+N", self, self.new_entry)
         local_shortcut("Ctrl+Z", self, self.undo)
+        local_shortcut("F5", self, self.check_for_changes)
 
         self.model = EntryModel(self)
         self.table = TableView()
@@ -1089,6 +1134,10 @@ class VaultView(QWidget):
             InfoBar.success("Undone", label, orient=Qt.Horizontal, isClosable=True,
                             position=InfoBarPosition.TOP_RIGHT, duration=2000, parent=self.window())
 
+    def check_for_changes(self):
+        if self.db is not None:
+            self.window().saver.check_external(manual=True)
+
     def duplicate_entry(self):
         e = self.current_entry()
         if not e or not self._editable():
@@ -1229,7 +1278,7 @@ class VaultView(QWidget):
             menu.addAction(Action(FIF.DELETE, "Delete permanently…" if permanent else "Move to Recycle Bin…",
                                   triggered=lambda: self.delete_folder(folder_id)))
         if menu.actions():
-            menu.exec(self.tree.viewport().mapToGlobal(pos))
+            menu.exec(self.tree.viewport().mapToGlobal(pos), ani=False)
 
     def set_save_status(self, text):
         self.save_status.setText(f"·  {text}" if text else "")
@@ -1301,7 +1350,7 @@ class VaultView(QWidget):
                             triggered=self.delete_entry)
             delete.setShortcut(QKeySequence("Del"))
             menu.addAction(delete)
-        menu.exec(self.table.viewport().mapToGlobal(pos))
+        menu.exec(self.table.viewport().mapToGlobal(pos), ani=False)
 
 
 # ---------------------------------------------------------------- editing
@@ -2074,11 +2123,24 @@ class SaveController(QObject):
 
     # ---- changes made elsewhere
 
-    def check_external(self):
-        if self.db is None or self.pending:
+    def check_external(self, manual=False):
+        """Reloads the database if another device or app changed the file. Runs every few seconds;
+        `manual` (the Check for changes button / F5) checks even if the file looks untouched."""
+        if self.db is None:
+            return
+        if self.pending:
+            if manual:  # saving detects outside changes and merges them with ours
+                self.save_timer.stop()
+                self.save_now()
+                self._info("Checking for changes", "Saving your edits; anything changed elsewhere is merged in.")
             return
         stat = self._stat()
-        if stat is None or stat == self.last_stat:
+        if stat is None:
+            if manual:
+                self._info("Can't read the file", "The database file isn't available right now. Is Google "
+                           "Drive running?", warning=True)
+            return
+        if stat == self.last_stat and not manual:
             return
         self.last_stat = stat
         db = self.db
@@ -2090,11 +2152,21 @@ class SaveController(QObject):
                 return None
             return data, store.open_kp(data, db.kp.password, db.kp.keyfile)
 
-        run_in_background(self, load, lambda result, error: self._external_loaded(db, result, error))
+        run_in_background(self, load, lambda result, error: self._external_loaded(db, result, error, manual))
 
-    def _external_loaded(self, db, result, error):
+    def _info(self, title, text, warning=False):
+        (InfoBar.warning if warning else InfoBar.info)(
+            title, text, orient=Qt.Horizontal, isClosable=True, position=InfoBarPosition.TOP_RIGHT,
+            duration=3000, parent=self.window)
+
+    def _external_loaded(self, db, result, error, manual=False):
         self.busy = False
         if db is not self.db or error or result is None:
+            if manual and db is self.db:
+                if error:
+                    self._info("Couldn't check for changes", str(error), warning=True)
+                else:
+                    self._info("Up to date", "No changes have been made elsewhere.")
             if self.queued:
                 queued, self.queued = self.queued, []
                 for batch in queued:
@@ -2103,8 +2175,8 @@ class SaveController(QObject):
         data, fresh = result
         db.replace_kp(fresh, data)
         self.reloaded.emit()
-        InfoBar.info("Updated", "Loaded changes made by another device or app.", orient=Qt.Horizontal,
-                     isClosable=True, position=InfoBarPosition.TOP_RIGHT, duration=3000, parent=self.window)
+        self.status.emit(f"Updated from elsewhere at {datetime.now():%H:%M}")
+        self._info("Updated", "Loaded changes made by another device or app.")
         queued, self.queued = self.queued, []
         for batch in queued:
             self._apply_batch(*batch)
@@ -2451,6 +2523,7 @@ class UnlockDialog(MessageBoxBase):
         result = {}
 
         def work(path=self.path, password=self.pw.text(), keyfile=self.keyfile):
+            from pykeepass.exceptions import CredentialsError, HeaderChecksumError, PayloadChecksumError
             try:
                 result["db"] = Database(path, password, keyfile)
             except CredentialsError:
@@ -2539,6 +2612,7 @@ class MainWindow(FluentWindow):
 
     def __init__(self):
         super().__init__()
+        self.stackedWidget.setAnimationEnabled(False)  # switch pages instantly (no 0.25 s slide)
         self.privacy_cover = PrivacyCover(self)
         self.setWindowTitle("Vault")
         self.resize(1360, 800)
@@ -2722,11 +2796,17 @@ class MainWindow(FluentWindow):
 
 
 if __name__ == "__main__":
+    if sys.platform == "win32":
+        # Own taskbar identity, so Windows shows Vault's icon rather than Python's (when run from source).
+        import ctypes
+        ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Vault.PasswordManager")
     app = QApplication(sys.argv)
-    app.setWindowIcon(QIcon(str(RESOURCE_DIR / "icons" / "vault.png")))
+    app.setWindowIcon(QIcon(str(RESOURCE_DIR / "icons" / "vault_app.png")))
     apply_theme(theme_name())
     window = MainWindow()
     apply_theme(theme_name(), window)
     window.show()
-    QTimer.singleShot(250, window.lock)
+    # Load pykeepass (crypto, Argon2, XML) in the background while the password is being typed.
+    threading.Thread(target=lambda: __import__("pykeepass"), daemon=True).start()
+    QTimer.singleShot(0, window.lock)
     sys.exit(app.exec())

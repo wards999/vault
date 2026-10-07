@@ -19,13 +19,15 @@ import os
 import time
 import uuid as uuidlib
 from dataclasses import dataclass, field as dc_field
-from datetime import datetime
+from datetime import datetime, timezone
 from pathlib import Path
 
 from lxml import etree
-from pykeepass import PyKeePass
 
 import totp
+
+# pykeepass (with its crypto and Argon2 libraries) takes a noticeable time to import, so it's
+# imported on first use; the app preloads it in the background while the unlock screen shows.
 
 FIELDS = ("title", "username", "password", "url", "notes", "otp")
 MAX_BACKUPS = 10
@@ -55,6 +57,7 @@ def icon_ref(element, default_id):
 
 
 def open_kp(data, password, keyfile):
+    from pykeepass import PyKeePass
     return PyKeePass(io.BytesIO(data), password=password or None, keyfile=keyfile or None)
 
 
@@ -150,32 +153,68 @@ class Database:
         return self.kp.tree.getroot().findtext("Meta/RecycleBinEnabled") != "False"
 
 
+_XML_KEYS = {"title": "Title", "username": "UserName", "password": "Password", "url": "URL", "notes": "Notes"}
+
+
 def entry_snapshot(e, ids, names, in_bin):
+    """Plain-data view of an entry. Reads the entry's XML directly: pykeepass's properties run an
+    XPath search per field, which made unlocking large databases noticeably slower."""
+    el = e._element
+    kp = e._kp
+    fields = string_fields(el)
+    raw = {name: fields.get(key) or "" for name, key in _XML_KEYS.items()}
+    otp = fields.get("otp") or totp.keepass2_secret(fields) or ""
+    raw["otp"] = otp
+
     def resolved(name):
-        try:
-            value = e.deref(name)  # resolves {REF:...} placeholders
-        except Exception:
-            value = getattr(e, name, None)
+        value = raw[name]
+        if "{REF:" in value:  # field references are rare; let pykeepass resolve them
+            try:
+                value = e.deref(name)
+            except Exception:
+                pass
         return value if isinstance(value, str) else ""
 
-    mtime = e.mtime.astimezone() if e.mtime else None
-    otp = get_otp(e)
-    raw = {f: getattr(e, f) or "" for f in FIELDS if f != "otp"}
-    raw["otp"] = otp
+    times = el.find("Times")
+
+    def when(tag, element_times=times):
+        node = element_times.find(tag) if element_times is not None else None
+        return kp._decode_time(node.text) if node is not None and node.text else None
+
+    mtime_utc = when("LastModificationTime")
+    mtime = mtime_utc.astimezone() if mtime_utc else None
+    expires = times is not None and times.findtext("Expires") == "True"
+    expiry = when("ExpiryTime") if expires else None
+
+    # When the current password was set: the oldest version in the latest run of history
+    # entries with the same password (no history: when the entry was created).
+    changed = mtime_utc
+    history = el.find("History")
+    for old in reversed(history.findall("Entry") if history is not None else []):
+        if (string_fields(old).get("Password") or "") != raw["password"]:
+            break
+        changed = when("LastModificationTime", old.find("Times"))
+    else:
+        changed = when("CreationTime") or changed
+
+    try:
+        icon_id = int(el.findtext("IconID") or 0)
+    except ValueError:
+        icon_id = 0
     entry = dict(
-        uuid=e.uuid.hex,
+        uuid=uuidlib.UUID(bytes=base64.b64decode(el.findtext("UUID"))).hex,
         title=resolved("title") or "(untitled)", username=resolved("username"),
         password=resolved("password"), url=resolved("url"), notes=resolved("notes"),
         raw=raw,  # unresolved values, for editing
-        totp=totp.params(otp, string_fields(e._element)),
-        base_mtime=e.mtime,  # to detect edits made elsewhere while we edit
-        password_changed=password_changed(e),
+        totp=totp.params(otp, fields),
+        base_mtime=mtime_utc,  # to detect edits made elsewhere while we edit
+        password_changed=changed,
         modified=mtime.strftime("%b %d, %Y %H:%M") if mtime else "",
         modified_key=mtime.isoformat() if mtime else "",
-        expires=e.expiry_time if e.expires else None,
-        expired=bool(e.expires and e.expired), folder_ids=ids, path=names, in_bin=in_bin,
-        folder_id=ids[-1] if ids else None,
-        icon=icon_ref(e, 0), folder=" › ".join(names) or "Root",
+        expires=expiry,
+        expired=bool(expires and expiry and datetime.now(timezone.utc) > expiry),
+        folder_ids=ids, path=names, in_bin=in_bin, folder_id=ids[-1] if ids else None,
+        icon=(icon_id, el.findtext("CustomIconUUID") or None), folder=" › ".join(names) or "Root",
     )
     entry["search"] = "\n".join(entry[k] for k in ("title", "username", "url", "notes")).lower()
     return entry
