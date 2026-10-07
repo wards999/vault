@@ -6,6 +6,7 @@ made by other devices or apps).
 Run:  python vault.py
 """
 import os
+from collections import Counter
 import sys
 import threading
 import time
@@ -25,7 +26,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout, QTreeWidgetItem, QTreeWidgetItemIterator,
     QFileDialog, QHeaderView, QAbstractItemView, QSplitter, QSplitterHandle, QLineEdit, QTableWidgetItem,
-    QStyledItemDelegate, QDialog,
+    QStyledItemDelegate, QDialog, QCompleter,
 )
 from qfluentwidgets import (
     FluentWindow, NavigationItemPosition, FluentIcon as FIF, setTheme, Theme,
@@ -37,6 +38,7 @@ from qfluentwidgets import (
     TableView, RoundMenu, Action, qconfig, getFont, SmoothMode, ComboBox, setCustomStyleSheet,
     setThemeColor, themeColor, ProgressRing, CardWidget, TableWidget, ScrollArea,
 )
+from qfluentwidgets.components.widgets.line_edit import CompleterMenu
 from qfluentwidgets.components.widgets.table_view import TableItemDelegate
 
 import favicon
@@ -1586,6 +1588,7 @@ class EntryEditor(MessageBoxBase):
         self.title.setPlaceholderText("e.g. GitHub")
         self.username = LineEdit()
         self.username.setText(raw["username"])
+        self._username_completer()
         self.url = LineEdit()
         self.url.setText(raw["url"])
         self.url.setPlaceholderText("https://")
@@ -1668,6 +1671,38 @@ class EntryEditor(MessageBoxBase):
     def _field(self, label, widget):
         self.form.addWidget(caption(label))
         self.form.addWidget(widget)
+
+    def _username_completer(self):
+        """Suggests usernames already used in the database (most used first), e.g. email addresses."""
+        counts = Counter(e["raw"]["username"] for e in self.db.entries
+                         if not e["in_bin"] and e["raw"]["username"] and not e["raw"]["username"].startswith("{REF:"))
+        if not counts:
+            return
+        completer = QCompleter([name for name, _ in counts.most_common()], self.username)
+        completer.setCaseSensitivity(Qt.CaseInsensitive)
+        completer.setFilterMode(Qt.MatchContains)  # "gmail" finds you@gmail.com
+        completer.setModelSorting(QCompleter.UnsortedModel)
+        completer.setMaxVisibleItems(8)
+        self.username.setCompleter(completer)
+        self.username.installEventFilter(self)  # show suggestions on focus when empty
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, "username", None) and event.type() == QEvent.FocusIn and not obj.text():
+            completer = obj.completer()
+            if completer is not None:
+                completer.setCompletionPrefix("")
+                QTimer.singleShot(0, lambda: obj.text() or self._show_username_suggestions())
+        return super().eventFilter(obj, event)
+
+    def _show_username_suggestions(self):
+        """The fluent LineEdit only pops up suggestions once something is typed; show them all here."""
+        line, completer = self.username, self.username.completer()
+        if not line._completerMenu:
+            line.setCompleterMenu(CompleterMenu(line))
+        completer.setCompletionPrefix("")
+        line._completerMenu.setCompletion(completer.completionModel(), completer.completionColumn())
+        line._completerMenu.setMaxVisibleItems(completer.maxVisibleItems())
+        line._completerMenu.popup()
 
     def entry_raw(self, name):
         return self.entry["raw"][name] if self.entry else ""
