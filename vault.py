@@ -144,6 +144,22 @@ def make_dialogs_instant():
     MaskDialogBase.showEvent = show_event
     MaskDialogBase.done = done
 
+    # Menus (right-click menus and dropdown lists) are revealed a few rows at a time by default;
+    # exec()'s `ani` flag is ignored by the library, so force "no animation" for all of them.
+    from qfluentwidgets.components.widgets.menu import MenuAnimationType, RoundMenu
+    original_exec = RoundMenu.exec
+
+    def instant_exec(self, pos, ani=True, aniType=MenuAnimationType.DROP_DOWN):
+        if aniType in (MenuAnimationType.PULL_UP, MenuAnimationType.FADE_IN_PULL_UP):
+            # Menus that open upwards (e.g. dropdowns near the bottom of the window): place them
+            # where the upward animation would have ended. The no-animation placement drops down.
+            self.adjustSize()
+            top = QApplication.screenAt(pos).availableGeometry().top() if QApplication.screenAt(pos) else 0
+            pos = QPoint(pos.x(), max(pos.y() - self.height() + 10, top + 4) + 4)
+        return original_exec(self, pos, False, MenuAnimationType.NONE)
+
+    RoundMenu.exec = instant_exec
+
 
 make_dialogs_instant()
 
