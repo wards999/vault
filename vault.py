@@ -1592,6 +1592,7 @@ class EntryEditor(MessageBoxBase):
         self.form.setContentsMargins(0, 0, 10, 0)  # room for the scroll bar
         self.form.setSpacing(6)
         self.scroll = ScrollArea()
+        self.scroll.setFocusPolicy(Qt.NoFocus)  # clicking the form's background mustn't steal focus from fields
         self.scroll.setWidgetResizable(True)
         self.scroll.enableTransparentBackground()
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -1702,7 +1703,8 @@ class EntryEditor(MessageBoxBase):
         self.suggestions = ListWidget()
         self.suggestions.setFocusPolicy(Qt.NoFocus)  # typing stays in the Username field
         self.suggestions.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.suggestions.itemClicked.connect(lambda item: self._use_suggestion(item.text()))
+        # Pick on press (like a dropdown), so nothing that happens before release can lose the click.
+        self.suggestions.itemPressed.connect(lambda item: self._use_suggestion(item.text()))
         setCustomStyleSheet(
             self.suggestions,
             "ListWidget { border: 1px solid rgba(0, 0, 0, 0.12); border-radius: 6px; background: rgba(255, 255, 255, 0.9); }",
@@ -1745,7 +1747,9 @@ class EntryEditor(MessageBoxBase):
             if kind == QEvent.FocusIn:
                 QTimer.singleShot(0, self._update_suggestions)
             elif kind == QEvent.FocusOut:
-                self._hide_suggestions()
+                # Hide shortly after leaving the field, but not while the mouse is on the list.
+                QTimer.singleShot(150, lambda: self.username.hasFocus() or self.suggestions.underMouse()
+                                  or self._hide_suggestions())
             elif kind == QEvent.KeyPress and self.suggestions.isVisible():
                 key, rows, row = event.key(), self.suggestions.count(), self.suggestions.currentRow()
                 if key == Qt.Key_Down:
