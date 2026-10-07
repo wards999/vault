@@ -52,7 +52,7 @@ jobs:
       - uses: actions/checkout@v5
       - name: Check the tag matches the app's version
         run: |
-          version=$(sed -n 's/^VERSION = "\(.*\)"/\1/p' vault.py)
+          version=$(sed -n 's/^VERSION = "\([^"]*\)".*/\1/p' vault.py)
           if [ "v$version" != "$GITHUB_REF_NAME" ]; then
             echo "::error::Tag $GITHUB_REF_NAME doesn't match VERSION = \"$version\" in vault.py"
             exit 1
