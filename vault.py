@@ -7,6 +7,7 @@ Run:  python vault.py
 """
 import hashlib
 import os
+import re
 from collections import Counter
 import sys
 import threading
@@ -1694,7 +1695,7 @@ class EntryEditor(MessageBoxBase):
     # change size. It's a child of the dialog, not a separate pop-up window: a pop-up captures the
     # next click anywhere, so the first click on Cancel only closed it.
 
-    SUGGESTION_ROWS = 5
+    SUGGESTION_ROWS = 6  # visible at once; the rest scroll
     SUGGESTION_ROW_HEIGHT = 30
 
     def _setup_username_suggestions(self):
@@ -1703,8 +1704,9 @@ class EntryEditor(MessageBoxBase):
         self._usernames = [name for name, _ in counts.most_common()]  # most used first
         self.suggestions = ListWidget(self.widget)  # floats inside the dialog's card
         self.suggestions.setFocusPolicy(Qt.NoFocus)  # typing stays in the Username field
-        self.suggestions.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.suggestions.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
         self.suggestions.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.suggestions.scrollDelegate.verticalSmoothScroll.setSmoothMode(SmoothMode.NO_SMOOTH)
         # Pick on press (like a dropdown), so nothing that happens before release can lose the click.
         self.suggestions.itemPressed.connect(lambda item: self._use_suggestion(item.text()))
         setCustomStyleSheet(  # opaque, since it covers the fields underneath
@@ -1725,7 +1727,11 @@ class EntryEditor(MessageBoxBase):
 
     def _update_suggestions(self):
         text = self.username.text().strip().lower()
-        matches = [n for n in self._usernames if text in n.lower() and n.lower() != text][:self.SUGGESTION_ROWS]
+        # Every matching username; typing more narrows the list. Each word (or *-separated part)
+        # can appear anywhere in the name, in any order: "simon", "sim*mail", "simon gmail".
+        parts = [p for p in re.split(r"[\s*]+", text) if p]
+        matches = [n for n in self._usernames
+                   if all(p in n.lower() for p in parts) and n.lower() != text]
         if not matches or not self.username.hasFocus():
             self._hide_suggestions()
             return
@@ -1734,8 +1740,11 @@ class EntryEditor(MessageBoxBase):
         for i in range(self.suggestions.count()):
             self.suggestions.item(i).setSizeHint(QSize(0, self.SUGGESTION_ROW_HEIGHT))
         top_left = self.username.mapTo(self.widget, QPoint(0, self.username.height() + 2))
-        self.suggestions.setGeometry(top_left.x(), top_left.y(), self.username.width(),
-                                     len(matches) * self.SUGGESTION_ROW_HEIGHT + 14)
+        rows = min(len(matches), self.SUGGESTION_ROWS)
+        room = self.widget.height() - top_left.y() - 16  # stay inside the editor
+        height = max(min(rows * self.SUGGESTION_ROW_HEIGHT + 14, room), 2 * self.SUGGESTION_ROW_HEIGHT + 14)
+        self.suggestions.setGeometry(top_left.x(), top_left.y(), self.username.width(), height)
+        self.suggestions.scrollToTop()
         self.suggestions.show()
         self.suggestions.raise_()
 
