@@ -18,7 +18,7 @@ from pathlib import Path
 
 from PySide6.QtCore import (
     Qt, QAbstractTableModel, QEvent, QModelIndex, QObject, QRect, QSettings, QSize,
-    QTimer, QUrl, Signal, QMimeData, QByteArray,
+    QTimer, QUrl, Signal, QMimeData, QByteArray, QPoint,
 )
 from PySide6.QtGui import (
     QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QInputMethodEvent, QKeySequence,
@@ -27,7 +27,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout, QTreeWidgetItem, QTreeWidgetItemIterator,
     QFileDialog, QHeaderView, QAbstractItemView, QSplitter, QSplitterHandle, QLineEdit, QTableWidgetItem,
-    QStyledItemDelegate, QDialog,
+    QStyledItemDelegate, QDialog, QGraphicsDropShadowEffect,
 )
 from qfluentwidgets import (
     FluentWindow, NavigationItemPosition, FluentIcon as FIF, setTheme, Theme,
@@ -1690,8 +1690,9 @@ class EntryEditor(MessageBoxBase):
         self.form.addWidget(widget)
 
     # ---- username suggestions
-    # Shown as a small list inside the dialog, under the field. (A pop-up suggestion menu
-    # captures the next click anywhere, so the first click on Cancel only closed the menu.)
+    # A dropdown list that floats over the fields below the Username field, so the dialog doesn't
+    # change size. It's a child of the dialog, not a separate pop-up window: a pop-up captures the
+    # next click anywhere, so the first click on Cancel only closed it.
 
     SUGGESTION_ROWS = 5
     SUGGESTION_ROW_HEIGHT = 30
@@ -1700,21 +1701,27 @@ class EntryEditor(MessageBoxBase):
         counts = Counter(e["raw"]["username"] for e in self.db.entries
                          if not e["in_bin"] and e["raw"]["username"] and not e["raw"]["username"].startswith("{REF:"))
         self._usernames = [name for name, _ in counts.most_common()]  # most used first
-        self.suggestions = ListWidget()
+        self.suggestions = ListWidget(self.widget)  # floats inside the dialog's card
         self.suggestions.setFocusPolicy(Qt.NoFocus)  # typing stays in the Username field
         self.suggestions.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.suggestions.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         # Pick on press (like a dropdown), so nothing that happens before release can lose the click.
         self.suggestions.itemPressed.connect(lambda item: self._use_suggestion(item.text()))
-        setCustomStyleSheet(
+        setCustomStyleSheet(  # opaque, since it covers the fields underneath
             self.suggestions,
-            "ListWidget { border: 1px solid rgba(0, 0, 0, 0.12); border-radius: 6px; background: rgba(255, 255, 255, 0.9); }",
-            "ListWidget { border: 1px solid rgba(255, 255, 255, 0.12); border-radius: 6px; background: rgba(255, 255, 255, 0.05); }")
+            "ListWidget { border: 1px solid rgba(0, 0, 0, 0.14); border-radius: 6px; background: #ffffff; }",
+            "ListWidget { border: 1px solid rgba(255, 255, 255, 0.14); border-radius: 6px; background: #2c2c2c; }")
+        shadow = QGraphicsDropShadowEffect(self.suggestions)
+        shadow.setBlurRadius(18)
+        shadow.setOffset(0, 4)
+        shadow.setColor(QColor(0, 0, 0, 60))
+        self.suggestions.setGraphicsEffect(shadow)
         self.suggestions.hide()
-        self.form.addWidget(self.suggestions)
         if not self._usernames:
             return
         self.username.textEdited.connect(lambda _: self._update_suggestions())
         self.username.installEventFilter(self)
+        self.scroll.verticalScrollBar().valueChanged.connect(lambda _: self._hide_suggestions())
 
     def _update_suggestions(self):
         text = self.username.text().strip().lower()
@@ -1726,15 +1733,14 @@ class EntryEditor(MessageBoxBase):
         self.suggestions.addItems(matches)
         for i in range(self.suggestions.count()):
             self.suggestions.item(i).setSizeHint(QSize(0, self.SUGGESTION_ROW_HEIGHT))
-        self.suggestions.setFixedHeight(len(matches) * self.SUGGESTION_ROW_HEIGHT + 8)
-        if not self.suggestions.isVisible():
-            self.suggestions.show()
-            self._fit()
+        top_left = self.username.mapTo(self.widget, QPoint(0, self.username.height() + 2))
+        self.suggestions.setGeometry(top_left.x(), top_left.y(), self.username.width(),
+                                     len(matches) * self.SUGGESTION_ROW_HEIGHT + 14)
+        self.suggestions.show()
+        self.suggestions.raise_()
 
     def _hide_suggestions(self):
-        if self.suggestions.isVisible():
-            self.suggestions.hide()
-            self._fit()
+        self.suggestions.hide()
 
     def _use_suggestion(self, name):
         self.username.setText(name)
