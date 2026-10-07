@@ -1,0 +1,19 @@
+# Never commit password databases, backups or settings
+*.kdbx
+*.kdb
+*.k
+*.key
+*.keyx
+backups/
+*.ini
+
+# Python / build output
+.venv/
+__pycache__/
+*.pyc
+build/
+dist/
+*.spec
+
+# Early UI mockup with sample data; not part of the app
+mockup.py

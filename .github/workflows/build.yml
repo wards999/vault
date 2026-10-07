@@ -1,0 +1,38 @@
+# Builds Vault for Windows and macOS on every push to main (and on demand from the Actions tab).
+# Download the results from the run's "Artifacts" section.
+name: Build
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build
+        shell: pwsh
+        run: ./build.ps1
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Vault-windows
+          path: dist/Vault-portable.zip
+
+  macos:
+    runs-on: macos-14  # Apple Silicon (M1 and later)
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build
+        run: bash build_mac.sh
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Vault-mac
+          path: dist/Vault-mac.zip
