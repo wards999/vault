@@ -49,6 +49,7 @@ import store
 import totp
 from store import Database, Op
 
+VERSION = "1.0.0"  # releases are tagged v<VERSION> (see .github/workflows/build.yml)
 IDLE_LOCK_MINUTES = 5
 CLIPBOARD_CHOICES = {"Never": 0, "10 seconds": 10, "20 seconds": 20, "30 seconds": 30,
                      "1 minute": 60, "2 minutes": 120, "5 minutes": 300}
@@ -2446,6 +2447,7 @@ class SettingsView(ScrollArea):
         root.addWidget(self._row("Update icons", "For entries that have a website address. Refreshing picks up "
                                  "sites that have changed their icon.", buttons))
         root.addStretch(1)
+        root.addWidget(caption(f"Vault {VERSION}"), 0, Qt.AlignRight)
 
     def _set_theme(self, name):
         settings.setValue("theme", name)
