@@ -45,6 +45,7 @@ from qfluentwidgets.components.widgets.table_view import TableItemDelegate
 import favicon
 import generator
 import health
+import quickunlock
 import store
 import totp
 from store import Database, Op
@@ -2459,7 +2460,7 @@ class HealthView(QWidget):
 
 
 class SettingsView(ScrollArea):
-    def __init__(self, on_colorize, on_density, on_fetch_missing, on_refresh_icons, parent=None):
+    def __init__(self, on_colorize, on_density, on_fetch_missing, on_refresh_icons, on_quick_unlock, parent=None):
         super().__init__(parent)
         self.setObjectName("view-settings")
         self.setWidgetResizable(True)
@@ -2490,6 +2491,13 @@ class SettingsView(ScrollArea):
         root.addWidget(self._row(
             "Lock when idle", f"Lock the database after {IDLE_LOCK_MINUTES} minutes without keyboard or mouse use.",
             self._bool_switch("lock_idle")))
+        verifier = quickunlock.get_verifier()
+        if verifier:
+            root.addWidget(self._row(
+                f"Unlock with {verifier.name}",
+                f"After you've unlocked with your master password, unlock again with {verifier.name} until "
+                "you quit Vault. Your master password is never saved.",
+                self._bool_switch("quick_unlock", on_quick_unlock)))
         root.addWidget(self._row(
             "Colour-code passwords",
             "When shown, colour uppercase, lowercase, digits and symbols differently.",
@@ -2555,13 +2563,19 @@ class SettingsView(ScrollArea):
 
 
 class UnlockDialog(MessageBoxBase):
-    """Asks for the database file, master password and optional key file, then opens it."""
+    """Asks for the database file, master password and optional key file, then opens it.
+    With Quick Unlock (`quick`, from earlier this session), an empty password means "use Touch ID /
+    Windows Hello" instead."""
 
-    def __init__(self, parent):
+    def __init__(self, parent, quick=None):
         super().__init__(parent)
         self.db = None
         self.path = setting("last_file", "")
         self.keyfile = setting("last_keyfile", "")
+        self.password = None  # the password that worked, for Quick Unlock next time
+        self.quick = quick
+        self.quick_failed = False
+        self.verifier = quickunlock.get_verifier() if quick else None
         self._worker = None
 
         self.viewLayout.setSpacing(10)
@@ -2578,6 +2592,7 @@ class UnlockDialog(MessageBoxBase):
         self.pw = PasswordLineEdit()
         self.pw.setPlaceholderText("Master password")
         self.pw.returnPressed.connect(self.yesButton.click)
+        self.pw.textChanged.connect(self._update_button)
         self.viewLayout.addWidget(self.pw)
 
         key_row = QHBoxLayout()
@@ -2605,6 +2620,14 @@ class UnlockDialog(MessageBoxBase):
         self._set_keyfile(self.keyfile if self.keyfile and Path(self.keyfile).exists() else "")
         self.pw.setFocus()
 
+    def _quick_ready(self):
+        return bool(self.quick and self.verifier and self.quick.matches(self.path, self.keyfile))
+
+    def _update_button(self):
+        if self._worker is None:
+            quick = self._quick_ready() and not self.pw.text()
+            self.yesButton.setText(f"Unlock with {self.verifier.name}" if quick else "Unlock")
+
     def _start_dir(self, current):
         if current:
             return str(Path(current).parent)
@@ -2614,12 +2637,14 @@ class UnlockDialog(MessageBoxBase):
         self.path = path
         self.file_label.setText(Path(path).name if path else "No database chosen")
         self.file_label.setToolTip(path)
+        self._update_button()
 
     def _set_keyfile(self, path):
         self.keyfile = path
         self.key_label.setText(f"Key file: {Path(path).name}" if path else "No key file")
         self.key_label.setToolTip(path)
         self.key_clear.setVisible(bool(path))
+        self._update_button()
 
     def _choose_file(self):
         path, _ = QFileDialog.getOpenFileName(
@@ -2645,15 +2670,47 @@ class UnlockDialog(MessageBoxBase):
         if not self.path:
             self._show_error("Choose your database file first.")
             return False
+        if not self.pw.text() and self._quick_ready():
+            self._start_quick()
+            return False
         if not self.pw.text() and not self.keyfile:
             self._show_error("Enter your master password.")
             return False
+        self._unlock(self.pw.text())
+        return False
+
+    def _start_quick(self):
+        """Asks Touch ID / Windows Hello, then unlocks with the password kept from earlier."""
+        self._show_error("")
+        self.yesButton.setEnabled(False)
+        self.yesButton.setText(f"Waiting for {self.verifier.name}…")
+        pending = self.verifier.verify(int(self.window().winId()), "unlock your database")
+        self._worker = pending  # blocks a second attempt meanwhile
+
+        def poll():
+            outcome = pending.result()
+            if outcome is None:
+                QTimer.singleShot(100, poll)
+                return
+            self._worker = None
+            approved, message = outcome
+            if approved:
+                self._unlock(self.quick.password(), quick=True)
+            else:
+                self.yesButton.setEnabled(True)
+                self._update_button()
+                self._show_error(message)
+                self.pw.setFocus()
+
+        poll()
+
+    def _unlock(self, password, quick=False):
         self._show_error("")
         self.yesButton.setEnabled(False)
         self.yesButton.setText("Unlocking…")
         result = {}
 
-        def work(path=self.path, password=self.pw.text(), keyfile=self.keyfile):
+        def work(path=self.path, password=password, keyfile=self.keyfile):
             from pykeepass.exceptions import CredentialsError, HeaderChecksumError, PayloadChecksumError
             try:
                 result["db"] = Database(path, password, keyfile)
@@ -2668,26 +2725,30 @@ class UnlockDialog(MessageBoxBase):
 
         self._worker = threading.Thread(target=work, daemon=True)
         self._worker.start()
-        self._poll(result)
-        return False
+        self._poll(result, password, quick)
 
-    def _poll(self, result):
+    def _poll(self, result, password, quick):
         if self._worker.is_alive():
-            QTimer.singleShot(50, lambda: self._poll(result))
+            QTimer.singleShot(50, lambda: self._poll(result, password, quick))
             return
         self._worker = None
         self.yesButton.setEnabled(True)
-        self.yesButton.setText("Unlock")
         if "db" in result:
             self.db = result["db"]
+            self.password = password
             self.pw.clear()
             settings.setValue("last_file", self.path)
             settings.setValue("last_keyfile", self.keyfile)
             self.accept()
-        else:
-            self._show_error(result["error"])
-            self.pw.selectAll()
-            self.pw.setFocus()
+            return
+        if quick and result["error"].startswith("Wrong password"):
+            # The master password was changed elsewhere (e.g. in KeePassXC): forget the old one.
+            self.quick, self.quick_failed = None, True
+            result["error"] = "The master password has changed. Enter the new one to unlock."
+        self._update_button()
+        self._show_error(result["error"])
+        self.pw.selectAll()
+        self.pw.setFocus()
 
 
 class IdleWatcher(QObject):
@@ -2751,6 +2812,7 @@ class MainWindow(FluentWindow):
         self.resize(1360, 800)
         self.locked = True
         self._copied = None
+        self.quick = None  # quickunlock.Sealed: the master password, encrypted in memory, until Vault quits
 
         self.vault = VaultView()
         self.addSubInterface(self.vault, FIF.HOME, "Vault")
@@ -2761,7 +2823,8 @@ class MainWindow(FluentWindow):
         self.addSubInterface(self.health, icon("HEART", "CERTIFICATE"), "Password health")
         self.addSubInterface(SettingsView(on_colorize=self.vault.set_colorize, on_density=self.vault.set_density,
                                           on_fetch_missing=lambda: self.fetch_icons(missing_only=True),
-                                          on_refresh_icons=lambda: self.fetch_icons(missing_only=False)),
+                                          on_refresh_icons=lambda: self.fetch_icons(missing_only=False),
+                                          on_quick_unlock=self._set_quick_unlock),
                              FIF.SETTING, "Settings", NavigationItemPosition.BOTTOM)
         self.icons = IconFetcher(self)
         self.idle = IdleWatcher(IDLE_LOCK_MINUTES, self._on_idle)
@@ -2911,9 +2974,22 @@ class MainWindow(FluentWindow):
             self.showNormal()
         self._show_unlock()
 
+    def _set_quick_unlock(self, on):
+        if not on:
+            self.quick = None
+
+    def _quick_unlock_on(self):
+        return setting("quick_unlock", True) and quickunlock.get_verifier() is not None
+
     def _show_unlock(self):
-        dialog = UnlockDialog(self)
-        if dialog.exec() and dialog.db:
+        dialog = UnlockDialog(self, quick=self.quick if self._quick_unlock_on() else None)
+        accepted = dialog.exec() and dialog.db
+        if dialog.quick_failed:
+            self.quick = None
+        if accepted and self._quick_unlock_on() and dialog.password is not None:
+            self.quick = quickunlock.Sealed(dialog.path, dialog.keyfile, dialog.password)
+        dialog.password = None
+        if accepted:
             db = dialog.db
             self.vault.load(db)
             self.saver.attach(db)
