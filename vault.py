@@ -49,7 +49,7 @@ import store
 import totp
 from store import Database, Op
 
-VERSION = "1.0.1"  # releases are tagged v<VERSION> (see .github/workflows/build.yml)
+VERSION = "1.0.2"  # releases are tagged v<VERSION> (see .github/workflows/build.yml)
 IDLE_LOCK_MINUTES = 5
 CLIPBOARD_CHOICES = {"Never": 0, "10 seconds": 10, "20 seconds": 20, "30 seconds": 30,
                      "1 minute": 60, "2 minutes": 120, "5 minutes": 300}
