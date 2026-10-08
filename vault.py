@@ -1004,16 +1004,24 @@ class VaultView(QWidget):
         self.table.sortByColumn(EntryModel.TITLE, Qt.AscendingOrder)
         header = self.table.horizontalHeader()
         header.setHighlightSections(False)
+        # Every column can be resized by dragging its right edge; only the last one stretches to fill
+        # the table (a stretching column can't be resized by hand, and gets squeezed to what's left).
         header.setSectionResizeMode(QHeaderView.Interactive)
-        header.setSectionResizeMode(EntryModel.WEBSITE, QHeaderView.Stretch)
+        header.setStretchLastSection(True)
+        header.setMinimumSectionSize(60)
         for col, width in ((EntryModel.TITLE, 220), (EntryModel.USERNAME, 200), (EntryModel.PASSWORD, 190),
-                           (EntryModel.FOLDER, 160), (EntryModel.MODIFIED, 150)):
+                           (EntryModel.WEBSITE, 240), (EntryModel.FOLDER, 160), (EntryModel.MODIFIED, 150)):
             self.table.setColumnWidth(col, width)
         # Remember sorting, column widths and column order.
         header.setSectionsMovable(True)
         state = settings.value("table_header")
         if state is not None and header.restoreState(state):
             self.table.sortByColumn(header.sortIndicatorSection(), header.sortIndicatorOrder())
+            # Layouts saved by earlier versions made Website stretch (and so not resizable): undo that.
+            header.setSectionResizeMode(QHeaderView.Interactive)
+            header.setStretchLastSection(True)
+            if header.sectionSize(EntryModel.WEBSITE) < 120:
+                header.resizeSection(EntryModel.WEBSITE, 240)
         self.header_timer = QTimer(self, singleShot=True, interval=400,
                                    timeout=lambda: settings.setValue("table_header", header.saveState()))
         header.sortIndicatorChanged.connect(self.header_timer.start)
