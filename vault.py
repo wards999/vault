@@ -62,6 +62,21 @@ IDLE_LOCK_CHOICES = {"Never": 0, "After 1 minute": 1, "After 2 minutes": 2, "Aft
                      "After 2 hours": 120, "After 5 hours": 300}
 
 
+UI_SIZES = {"Smaller (80%)": 0.8, "Small (90%)": 0.9, "Normal (100%)": 1.0, "Large (110%)": 1.1,
+            "Larger (125%)": 1.25, "Largest (150%)": 1.5}
+
+
+def ui_scale():
+    """How much bigger or smaller the whole interface is drawn (text, buttons, icons). The UI library
+    uses fixed pixel sizes, so this scales everything together, like zooming a web page; Qt applies
+    it when the app starts (QT_SCALE_FACTOR)."""
+    try:
+        scale = float(settings.value("ui_scale", 1.0))
+    except (TypeError, ValueError):
+        return 1.0
+    return scale if scale in UI_SIZES.values() else 1.0
+
+
 def idle_lock_minutes():
     """Minutes without use before Vault locks (0 = never). Earlier versions had an on/off switch
     ("lock_idle") for a fixed 5 minutes: honour it until a time is chosen."""
@@ -344,9 +359,18 @@ class EntryIcons:
         pm = QPixmap()
         return QIcon(pm) if pm.loadFromData(data) else None
 
+    def folder(self, icon):
+        """A folder's own icon from the database, or None for the plain folder icons (48 folder,
+        49 open folder), which are drawn with the app's theme-coloured folder instead."""
+        icon_id, custom = icon
+        key = ("folder", custom or icon_id)
+        if key not in self.cache:
+            self.cache[key] = self._custom(custom) or (None if icon_id in (48, 49) else self._standard(icon_id, True))
+        return self.cache[key]
+
     @staticmethod
-    def _standard(icon_id):
-        if icon_id == 0:  # the default key icon: the letter avatar is more useful
+    def _standard(icon_id, allow_key=False):
+        if icon_id == 0 and not allow_key:  # the default key icon: for entries the letter avatar is more useful
             return None
         match = next(STANDARD_ICON_DIR.glob(f"C{icon_id:02d}_*.svg"), None)
         return QIcon(str(match)) if match else None
@@ -907,7 +931,7 @@ class VaultView(QWidget):
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._folder_menu)
         self.tree.setHeaderHidden(True)
-        self.tree.setIndentation(16)
+        self.tree.setIndentation(10)  # compact: each level is still clearly offset
         self.tree.scrollDelagate.verticalSmoothScroll.setSmoothMode(SmoothMode.NO_SMOOTH)
         self.tree.currentItemChanged.connect(self._on_folder)
         tree_col.addWidget(self.tree, 1)
@@ -1056,6 +1080,7 @@ class VaultView(QWidget):
             item = QTreeWidgetItem([f"{f['name']}  ({n})"])
             item.setData(0, Qt.UserRole, f["id"])
             item.setData(0, Qt.UserRole + 1, f["in_bin"])
+            item.setData(0, Qt.UserRole + 2, f.get("icon"))
             if f["id"] == db.bin_id or f["in_bin"]:
                 item.setFlags(item.flags() & ~Qt.ItemIsDragEnabled)
             items[f["parent"]].addChild(item)
@@ -1102,13 +1127,17 @@ class VaultView(QWidget):
         it = QTreeWidgetItemIterator(self.tree)
         while it.value():
             item = it.value()
-            if not item.parent():
-                ico = icon("LIBRARY", "FOLDER")
+            own = None  # the folder's own icon from the database (as KeePass shows it), if it has one
+            if item.parent() and not item.data(0, Qt.UserRole + 1) and self.model.icons and item.data(0, Qt.UserRole + 2):
+                own = self.model.icons.folder(item.data(0, Qt.UserRole + 2))
+            if own:
+                item.setIcon(0, own)
+            elif not item.parent():
+                item.setIcon(0, icon("LIBRARY", "FOLDER").icon())
             elif item.data(0, Qt.UserRole + 1):
-                ico = FIF.DELETE
+                item.setIcon(0, FIF.DELETE.icon())
             else:
-                ico = FIF.FOLDER
-            item.setIcon(0, ico.icon())
+                item.setIcon(0, FIF.FOLDER.icon())
             it += 1
 
     @staticmethod
@@ -2593,7 +2622,7 @@ class HealthView(QWidget):
 
 class SettingsView(ScrollArea):
     def __init__(self, on_colorize, on_density, on_fetch_missing, on_refresh_icons, on_quick_unlock, on_idle_minutes,
-                 parent=None):
+                 on_restart, parent=None):
         super().__init__(parent)
         self.setObjectName("view-settings")
         self.setWidgetResizable(True)
@@ -2614,6 +2643,12 @@ class SettingsView(ScrollArea):
         themes.currentTextChanged.connect(self._set_theme)
         root.addWidget(self._row("Theme", "Colours for the whole app. System follows Windows' light or dark mode.",
                                  themes))
+        sizes = ComboBox()
+        sizes.addItems(list(UI_SIZES))
+        sizes.setCurrentText(next(k for k, v in UI_SIZES.items() if v == ui_scale()))
+        sizes.currentTextChanged.connect(lambda name: self._set_ui_size(name, on_restart))
+        root.addWidget(self._row("Text size", "Makes text, buttons and icons smaller or larger. Applies when Vault "
+                                 "restarts.", sizes))
         clipboard = ComboBox()
         clipboard.addItems(list(CLIPBOARD_CHOICES))
         clipboard.setCurrentText(duration_text(clipboard_seconds()))
@@ -2677,6 +2712,16 @@ class SettingsView(ScrollArea):
                                  "sites that have changed their icon.", buttons))
         root.addStretch(1)
         root.addWidget(caption(f"Vault {VERSION}"), 0, Qt.AlignRight)
+
+    def _set_ui_size(self, name, on_restart):
+        settings.setValue("ui_scale", UI_SIZES[name])
+        bar = InfoBar(InfoBarIcon.INFORMATION, "Text size", f"{name} is used from the next start of Vault.",
+                      orient=Qt.Horizontal, isClosable=True, duration=10000, position=InfoBarPosition.TOP_RIGHT,
+                      parent=self.window())
+        button = PushButton("Restart now")
+        button.clicked.connect(lambda: (bar.close(), on_restart()))
+        bar.addWidget(button)
+        bar.show()
 
     def _set_theme(self, name):
         settings.setValue("theme", name)
@@ -2979,7 +3024,8 @@ class MainWindow(FluentWindow):
                                           on_fetch_missing=lambda: self.fetch_icons(missing_only=True),
                                           on_refresh_icons=lambda: self.fetch_icons(missing_only=False),
                                           on_quick_unlock=self._set_quick_unlock,
-                                          on_idle_minutes=lambda minutes: self.idle.set_minutes(minutes)),
+                                          on_idle_minutes=lambda minutes: self.idle.set_minutes(minutes),
+                                          on_restart=self.restart),
                              FIF.SETTING, "Settings", NavigationItemPosition.BOTTOM)
         self.icons = IconFetcher(self)
         self.idle = IdleWatcher(idle_lock_minutes(), self._on_idle)
@@ -3228,6 +3274,22 @@ class MainWindow(FluentWindow):
         self.save_geometry()
         super().closeEvent(event)
 
+    def restart(self):
+        """Saves any pending changes, starts a new copy of Vault and quits this one (e.g. to apply a
+        new text size). The new copy starts locked."""
+        self.saver.flush(self._restart_now)
+
+    def _restart_now(self):
+        from PySide6.QtCore import QProcess
+        if getattr(sys, "frozen", False):  # the packaged app: Vault.exe / Vault.app
+            program, args = sys.executable, sys.argv[1:]
+        else:  # running from source: python vault.py
+            program, args = sys.executable, [os.path.abspath(sys.argv[0])] + sys.argv[1:]
+        QProcess.startDetached(program, args, os.getcwd())
+        self.save_geometry()
+        self._closing = True
+        QApplication.quit()
+
     def _close_now(self):
         self._closing = True
         self.close()
@@ -3238,6 +3300,8 @@ if __name__ == "__main__":
         # Own taskbar identity, so Windows shows Vault's icon rather than Python's (when run from source).
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Vault.PasswordManager")
+    if ui_scale() != 1.0:  # Settings → Text size (must be set before the QApplication exists)
+        os.environ["QT_SCALE_FACTOR"] = str(ui_scale())
     app = QApplication(sys.argv)
     use_system_ui_font()
     # On macOS this is also the Dock icon, so use the version drawn on Apple's icon grid (with its

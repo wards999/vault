@@ -33,6 +33,7 @@ FIELDS = ("title", "username", "password", "url", "notes", "otp")
 MAX_BACKUPS = 10
 BACKUP_INTERVAL = 10 * 60  # seconds
 RECYCLE_BIN_ICON = "43"  # KeePass's trash-can icon
+FOLDER_ICON = 48  # KeePass's standard folder icon (the default for groups)
 
 
 def digest(data):
@@ -142,7 +143,8 @@ class Database:
                 sub_bin = in_bin or sub_id == self.bin_id
                 name = sub.name or "(unnamed)"
                 self.folders.append(dict(id=sub_id, name=name, parent=ids[-1] if ids else None,
-                                         in_bin=sub_bin, path=names + (name,)))
+                                         in_bin=sub_bin, path=names + (name,),
+                                         icon=icon_ref(sub, FOLDER_ICON)))
                 walk(sub, ids + (sub_id,), names + (name,), sub_bin)
 
         walk(kp.root_group, (), (), False)
