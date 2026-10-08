@@ -1631,8 +1631,39 @@ class VaultView(QWidget):
             permanent = in_bin or not self.db.recycle_bin_enabled
             menu.addAction(Action(FIF.DELETE, "Delete permanently…" if permanent else "Move to Recycle Bin…",
                                   triggered=lambda: self.delete_folder(folder_id)))
+        if is_bin:
+            empty = Action(FIF.DELETE, "Empty Recycle Bin…", triggered=self.empty_recycle_bin)
+            empty.setEnabled(any(e["in_bin"] for e in self.db.entries) or
+                             any(f["parent"] == folder_id for f in self.db.folders))
+            menu.addAction(empty)
         if menu.actions():
             menu.exec(self.tree.viewport().mapToGlobal(pos), ani=False)
+
+    def empty_recycle_bin(self):
+        """Permanently deletes everything in the Recycle Bin, after asking. One change, so Undo
+        brings it all back."""
+        bin_id = self.db.bin_id
+        if not bin_id or not self._editable():
+            return
+        entries = [e for e in self.db.entries if e["folder_id"] == bin_id]  # directly in the bin
+        folders = [f for f in self.db.folders if f["parent"] == bin_id]    # deleting these takes their contents
+        total_entries = sum(e["in_bin"] for e in self.db.entries)
+        if not entries and not folders:
+            return
+        parts = [f"{total_entries} entr{'y' if total_entries == 1 else 'ies'}"] if total_entries else []
+        if folders:
+            nested = sum(1 for f in self.db.folders if f["in_bin"] and f["id"] != bin_id)
+            parts.append(f"{nested} folder{'s' if nested != 1 else ''}")
+        what = " and ".join(parts)
+        box = MessageBox("Empty Recycle Bin?", f"{what} will be deleted permanently.", self.window())
+        box.yesButton.setText("Empty Recycle Bin")
+        box.cancelButton.setText("Cancel")
+        if not box.exec():
+            return
+        ops = [Op("delete", e["uuid"], title=e["title"]) for e in entries]
+        ops += [Op("folder_delete", f["id"], title=f["name"]) for f in folders]
+        self.window().saver.submit_many(ops, "Emptying the Recycle Bin")
+        self.window().undo_toast("Recycle Bin emptied", f"{what} deleted.")
 
     def set_save_status(self, text):
         self.save_status.setText(f"·  {text}" if text else "")
