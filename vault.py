@@ -3592,6 +3592,21 @@ class MainWindow(FluentWindow):
             self.move(screen.center() - self.rect().center())
         QApplication.instance().aboutToQuit.connect(self.save_geometry)
 
+        # Full screen: Control-Command-F on macOS (like the green button), F11 on Windows.
+        self._was_maximized = False
+        full_screen = QShortcut(self)
+        full_screen.setKeys(QKeySequence.StandardKey.FullScreen)
+        full_screen.setContext(Qt.WindowShortcut)
+        full_screen.activated.connect(self.toggle_full_screen)
+
+    def toggle_full_screen(self):
+        if self.isFullScreen():
+            self.showMaximized() if self._was_maximized else self.showNormal()
+        else:
+            self._was_maximized = self.isMaximized()
+            self.save_geometry()
+            self.showFullScreen()
+
     def _use_mac_window_controls(self):
         """macOS: the native traffic-light buttons at the top left, like every Mac app, instead of the
         Windows-style buttons the UI library draws on the right."""
@@ -3680,7 +3695,8 @@ class MainWindow(FluentWindow):
             self.privacy_cover.setGeometry(self.rect())
 
     def save_geometry(self):
-        settings.setValue("window_geometry", self.saveGeometry())
+        if not self.isFullScreen():  # next time, open as it was before going full screen
+            settings.setValue("window_geometry", self.saveGeometry())
 
     def _on_reloaded(self):
         self.vault.load(self.saver.db, keep_state=True)
