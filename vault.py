@@ -41,6 +41,7 @@ from qfluentwidgets import (
     setThemeColor, themeColor, ProgressRing, ListWidget, CardWidget, TableWidget, ScrollArea, setFontFamilies,
 )
 from qfluentwidgets.components.widgets.table_view import TableItemDelegate
+from qfluentwidgets.components.widgets.tree_view import TreeItemDelegate
 
 import favicon
 import generator
@@ -460,6 +461,21 @@ class EntryDelegate(TableItemDelegate):
 
 ENTRY_MIME = "application/x-vault-entries"
 FOLDER_MIME = "application/x-vault-folder"
+
+
+class FolderRowDelegate(TreeItemDelegate):
+    """The UI library's folder row drawing, with the row height set by the row density (only the
+    height: the width stays what the text needs, so the panel can fit the widest folder)."""
+
+    def __init__(self, tree):
+        super().__init__(tree)
+        self.row_height = None
+
+    def sizeHint(self, option, index):
+        size = super().sizeHint(option, index)
+        if self.row_height:
+            size.setHeight(self.row_height)
+        return size
 
 
 class FolderTree(TreeWidget):
@@ -927,6 +943,8 @@ class VaultView(QWidget):
         tree_head.addWidget(self.new_folder_btn)
         tree_col.addLayout(tree_head)
         self.tree = FolderTree()
+        self.folder_delegate = FolderRowDelegate(self.tree)  # row height follows Settings → Row density
+        self.tree.setItemDelegate(self.folder_delegate)
         self.tree.entriesDropped.connect(self._on_entries_dropped)
         self.tree.folderDropped.connect(self._on_folder_dropped)
         self.tree.setContextMenuPolicy(Qt.CustomContextMenu)
@@ -935,6 +953,8 @@ class VaultView(QWidget):
         self.tree.setIndentation(10)  # compact: each level is still clearly offset
         self.tree.scrollDelagate.verticalSmoothScroll.setSmoothMode(SmoothMode.NO_SMOOTH)
         self.tree.currentItemChanged.connect(self._on_folder)
+        for signal in (self.tree.itemExpanded, self.tree.itemCollapsed):  # what's visible changed: fit again
+            signal.connect(lambda _item: QTimer.singleShot(0, self.fit_folder_panel))
         tree_col.addWidget(self.tree, 1)
         tree_box = QWidget()
         tree_box.setLayout(tree_col)
@@ -1158,8 +1178,6 @@ class VaultView(QWidget):
             item = it.value()
             if getattr(self, "_tree_font", None) is not None:
                 item.setData(0, Qt.FontRole, self._tree_font)  # Settings → List text size
-            if getattr(self, "_folder_row", None):
-                item.setSizeHint(0, QSize(0, self._folder_row))  # Settings → Row density
             own = None  # the folder's own icon from the database (as KeePass shows it), if it has one
             if item.parent() and not item.data(0, Qt.UserRole + 1) and self.model.icons and item.data(0, Qt.UserRole + 2):
                 own = self.model.icons.folder(item.data(0, Qt.UserRole + 2))
@@ -1173,6 +1191,23 @@ class VaultView(QWidget):
                 item.setIcon(0, FIF.FOLDER.icon())
             it += 1
         self.tree.doItemsLayout()  # the tree caches row heights: recalculate them for the new size
+        QTimer.singleShot(0, self.fit_folder_panel)
+
+    def fit_folder_panel(self):
+        """Makes the folder panel just wide enough for its widest folder name (with its indent), between
+        the width of the "Folders" heading and 40% of the page. Dragging the divider still works; it
+        fits again when the folders or the text size change."""
+        if not self.tree.topLevelItemCount() or not self.isVisible():
+            return
+        tree = self.tree
+        rows = tree.sizeHintForColumn(0)  # widest visible row, including indentation and padding
+        frame = tree.width() - tree.viewport().width()  # border and (if shown) the scroll bar
+        margins = self.tree.parentWidget().layout().contentsMargins()
+        wanted = rows + frame + margins.left() + margins.right() + 8  # 8 px to spare
+        heading = self.folders_title.sizeHint().width() + self.new_folder_btn.sizeHint().width() + 24
+        total = sum(self.tree_splitter.sizes())
+        width = max(heading, 150, min(wanted, int(total * 0.4)))
+        self.tree_splitter.setSizes([width, total - width])
     @staticmethod
     def _folder_key(db):
         # One remembered folder per database file (keys can't contain the path itself).
@@ -1341,6 +1376,7 @@ class VaultView(QWidget):
         # The folder tree follows the same density (and text size), but never clips its text.
         font_px = round(13 * k)
         self._folder_row = max(round(FOLDER_ROW_HEIGHTS.get(name, 33) * k), font_px + 10)
+        self.folder_delegate.row_height = self._folder_row
         if hasattr(self, "model"):
             self._set_tree_icons()  # applies the row height to every folder
 
