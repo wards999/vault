@@ -62,29 +62,15 @@ IDLE_LOCK_CHOICES = {"Never": 0, "After 1 minute": 1, "After 2 minutes": 2, "Aft
                      "After 2 hours": 120, "After 5 hours": 300}
 
 
-UI_SIZES = {"Smaller (80%)": 0.8, "Small (90%)": 0.9, "Normal (100%)": 1.0, "Large (110%)": 1.1,
-            "Larger (125%)": 1.25, "Largest (150%)": 1.5}
+LIST_TEXT_SIZES = [80, 90, 100, 110, 125, 140, 160]  # % of normal, for the entry list, folders and notes
 
 
-def ui_scale():
-    """How much bigger or smaller the whole interface is drawn (text, buttons, icons). The UI library
-    uses fixed pixel sizes, so this scales everything together, like zooming a web page; Qt applies
-    it when the app starts (QT_SCALE_FACTOR)."""
+def list_text_size():
     try:
-        scale = float(settings.value("ui_scale", 1.0))
+        size = int(float(settings.value("list_text_size", 100)))
     except (TypeError, ValueError):
-        return 1.0
-    return scale if scale in UI_SIZES.values() else 1.0
-
-
-def usable_ui_sizes():
-    """Sizes that render crisply on this screen. Shrinking below one screen pixel per design pixel
-    leaves too few pixels for clean text (smudgy at 80-90% on a screen at Windows' 100% scaling),
-    so smaller sizes are only offered on sharper screens (e.g. 150% scaling, Retina). The current
-    choice is always kept, so it can be changed back."""
-    screen = QApplication.primaryScreen()
-    native = screen.devicePixelRatio() / ui_scale() if screen else 1.0  # the screen's own scaling
-    return [s for s in UI_SIZES.values() if native * s >= 0.99 or s == ui_scale()]
+        return 100
+    return size if size in LIST_TEXT_SIZES else 100
 
 
 def idle_lock_minutes():
@@ -915,6 +901,8 @@ class NotesPanel(SimpleCardWidget):
 class VaultView(QWidget):
     """KeePass-style layout: folder tree | entry table with notes underneath."""
 
+    listTextChanged = Signal(int)  # the list text size (%) changed, e.g. with Ctrl+wheel
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("view-vault")
@@ -1044,6 +1032,15 @@ class VaultView(QWidget):
 
         self.notes = NotesPanel()
 
+        # List text size: Ctrl + mouse wheel, Ctrl+= / Ctrl+- and Ctrl+0 (normal) over the folders,
+        # entries and notes, or Settings → List text size. Changes straight away.
+        self._wheel_zoom = 0
+        for area in (self.table.viewport(), self.tree.viewport(), self.notes.notes.viewport()):
+            area.installEventFilter(self)
+        for keys, step in (("Ctrl+=", 1), ("Ctrl++", 1), ("Ctrl+-", -1)):
+            local_shortcut(keys, self, lambda step=step: self.zoom_list_text(step))
+        local_shortcut("Ctrl+0", self, lambda: self.set_list_text_size(100))
+
         self.splitter = GripSplitter(Qt.Vertical, "notes_splitter", [self.table, self.notes], [600, 170])
         right.addWidget(self.splitter, 1)
         right_box = QWidget()
@@ -1055,6 +1052,13 @@ class VaultView(QWidget):
         self.tree_splitter = GripSplitter(Qt.Horizontal, "tree_splitter", [tree_box, right_box], [240, 1000])
         root.addWidget(self.tree_splitter)
         qconfig.themeChanged.connect(self._set_tree_icons)
+
+        # Normal text sizes of the folder tree and notes (set by the UI library's styles), then the
+        # saved list text size.
+        self.notes.notes.ensurePolished()
+        self._notes_base_px = self.notes.notes.fontInfo().pixelSize() or 14
+        self._list_text = list_text_size()
+        self.set_list_text_size(self._list_text)
 
     # ---- loading
 
@@ -1137,6 +1141,8 @@ class VaultView(QWidget):
         it = QTreeWidgetItemIterator(self.tree)
         while it.value():
             item = it.value()
+            if getattr(self, "_tree_font", None) is not None:
+                item.setData(0, Qt.FontRole, self._tree_font)  # Settings → List text size
             own = None  # the folder's own icon from the database (as KeePass shows it), if it has one
             if item.parent() and not item.data(0, Qt.UserRole + 1) and self.model.icons and item.data(0, Qt.UserRole + 2):
                 own = self.model.icons.folder(item.data(0, Qt.UserRole + 2))
@@ -1216,7 +1222,36 @@ class VaultView(QWidget):
     def eventFilter(self, obj, event):
         if obj is getattr(self, "right_box", None) and event.type() == QEvent.Resize:
             self._fit_header(event.size().width())
+        elif event.type() == QEvent.Wheel and event.modifiers() & Qt.ControlModifier:
+            # Ctrl + wheel zooms the list text (one step per notch; touchpads send smaller amounts)
+            self._wheel_zoom += event.angleDelta().y()
+            while abs(self._wheel_zoom) >= 120:
+                step = 1 if self._wheel_zoom > 0 else -1
+                self._wheel_zoom -= 120 * step
+                self.zoom_list_text(step)
+            return True
         return False
+
+    def zoom_list_text(self, step):
+        i = LIST_TEXT_SIZES.index(self._list_text) + step
+        self.set_list_text_size(LIST_TEXT_SIZES[max(0, min(len(LIST_TEXT_SIZES) - 1, i))])
+
+    def set_list_text_size(self, size):
+        """Text size (% of normal) of the entry list, folder tree and notes; rows grow with it."""
+        size = min(LIST_TEXT_SIZES, key=lambda s: abs(s - size))
+        settings.setValue("list_text_size", size)
+        self._list_text = size
+        k = size / 100
+        self.delegate.font.setPixelSize(round(13 * k))
+        self.delegate.mono.setPixelSize(round(14 * k))
+        self.set_density(self._density)  # row height and icons follow the text
+        # The UI library draws folder names in a fixed 13 px font unless an item carries its own.
+        self._tree_font = getFont(round(13 * k))
+        self._set_tree_icons()  # also gives every folder item the font
+        notes_qss = f"QPlainTextEdit {{ font-size: {round(self._notes_base_px * k)}px; }}"
+        setCustomStyleSheet(self.notes.notes, notes_qss, notes_qss)
+        self.table.viewport().update()
+        self.listTextChanged.emit(size)
 
     def _button_width(self, button, text):
         """The width a button needs with this text, measured with whatever font this system uses."""
@@ -1250,9 +1285,11 @@ class VaultView(QWidget):
         self.new_btn.setText("" if new_icon_only else "New entry")
 
     def set_density(self, name):
+        self._density = name
         row_height, icon_size = ROW_DENSITIES.get(name, ROW_DENSITIES["Comfortable"])
-        self.table.verticalHeader().setDefaultSectionSize(row_height)
-        self.table.setIconSize(QSize(icon_size, icon_size))
+        k = getattr(self, "_list_text", 100) / 100  # rows and icons grow with the list text size
+        self.table.verticalHeader().setDefaultSectionSize(round(row_height * k))
+        self.table.setIconSize(QSize(round(icon_size * k), round(icon_size * k)))
 
     def set_colorize(self, on):
         self.delegate.colorize = on
@@ -2632,7 +2669,7 @@ class HealthView(QWidget):
 
 class SettingsView(ScrollArea):
     def __init__(self, on_colorize, on_density, on_fetch_missing, on_refresh_icons, on_quick_unlock, on_idle_minutes,
-                 on_restart, parent=None):
+                 on_list_text, parent=None):
         super().__init__(parent)
         self.setObjectName("view-settings")
         self.setWidgetResizable(True)
@@ -2653,12 +2690,13 @@ class SettingsView(ScrollArea):
         themes.currentTextChanged.connect(self._set_theme)
         root.addWidget(self._row("Theme", "Colours for the whole app. System follows Windows' light or dark mode.",
                                  themes))
-        sizes = ComboBox()
-        sizes.addItems([name for name, scale in UI_SIZES.items() if scale in usable_ui_sizes()])
-        sizes.setCurrentText(next(k for k, v in UI_SIZES.items() if v == ui_scale()))
-        sizes.currentTextChanged.connect(lambda name: self._set_ui_size(name, on_restart))
-        root.addWidget(self._row("Text size", "Makes text, buttons and icons smaller or larger. Applies when Vault "
-                                 "restarts.", sizes))
+        self.list_text = ComboBox()
+        self.list_text.addItems([f"{size}%" for size in LIST_TEXT_SIZES])
+        self.list_text.setCurrentText(f"{list_text_size()}%")
+        self.list_text.currentTextChanged.connect(lambda text: on_list_text(int(text.rstrip("%"))))
+        root.addWidget(self._row(
+            "List text size", "Text size of the entry list, folders and notes. Also Ctrl + mouse wheel, "
+            "Ctrl+= / Ctrl+− to change it, and Ctrl+0 for normal.", self.list_text))
         clipboard = ComboBox()
         clipboard.addItems(list(CLIPBOARD_CHOICES))
         clipboard.setCurrentText(duration_text(clipboard_seconds()))
@@ -2723,15 +2761,11 @@ class SettingsView(ScrollArea):
         root.addStretch(1)
         root.addWidget(caption(f"Vault {VERSION}"), 0, Qt.AlignRight)
 
-    def _set_ui_size(self, name, on_restart):
-        settings.setValue("ui_scale", UI_SIZES[name])
-        bar = InfoBar(InfoBarIcon.INFORMATION, "Text size", f"{name} is used from the next start of Vault.",
-                      orient=Qt.Horizontal, isClosable=True, duration=10000, position=InfoBarPosition.TOP_RIGHT,
-                      parent=self.window())
-        button = PushButton("Restart now")
-        button.clicked.connect(lambda: (bar.close(), on_restart()))
-        bar.addWidget(button)
-        bar.show()
+    def show_list_text_size(self, size):
+        """Keeps the choice in step when the size is changed with Ctrl+wheel or the shortcuts."""
+        self.list_text.blockSignals(True)
+        self.list_text.setCurrentText(f"{size}%")
+        self.list_text.blockSignals(False)
 
     def _set_theme(self, name):
         settings.setValue("theme", name)
@@ -3030,13 +3064,14 @@ class MainWindow(FluentWindow):
             onClick=self.lock, selectable=False, position=NavigationItemPosition.BOTTOM)
         self.health = HealthView()
         self.addSubInterface(self.health, icon("HEART", "CERTIFICATE"), "Password health")
-        self.addSubInterface(SettingsView(on_colorize=self.vault.set_colorize, on_density=self.vault.set_density,
+        self.settings_view = SettingsView(on_colorize=self.vault.set_colorize, on_density=self.vault.set_density,
                                           on_fetch_missing=lambda: self.fetch_icons(missing_only=True),
                                           on_refresh_icons=lambda: self.fetch_icons(missing_only=False),
                                           on_quick_unlock=self._set_quick_unlock,
                                           on_idle_minutes=lambda minutes: self.idle.set_minutes(minutes),
-                                          on_restart=self.restart),
-                             FIF.SETTING, "Settings", NavigationItemPosition.BOTTOM)
+                                          on_list_text=self.vault.set_list_text_size)
+        self.addSubInterface(self.settings_view, FIF.SETTING, "Settings", NavigationItemPosition.BOTTOM)
+        self.vault.listTextChanged.connect(self.settings_view.show_list_text_size)
         self.icons = IconFetcher(self)
         self.idle = IdleWatcher(idle_lock_minutes(), self._on_idle)
         # Lock with the computer (locking, sleep, switching user); see systemlock.py.
@@ -3284,22 +3319,6 @@ class MainWindow(FluentWindow):
         self.save_geometry()
         super().closeEvent(event)
 
-    def restart(self):
-        """Saves any pending changes, starts a new copy of Vault and quits this one (e.g. to apply a
-        new text size). The new copy starts locked."""
-        self.saver.flush(self._restart_now)
-
-    def _restart_now(self):
-        from PySide6.QtCore import QProcess
-        if getattr(sys, "frozen", False):  # the packaged app: Vault.exe / Vault.app
-            program, args = sys.executable, sys.argv[1:]
-        else:  # running from source: python vault.py
-            program, args = sys.executable, [os.path.abspath(sys.argv[0])] + sys.argv[1:]
-        QProcess.startDetached(program, args, os.getcwd())
-        self.save_geometry()
-        self._closing = True
-        QApplication.quit()
-
     def _close_now(self):
         self._closing = True
         self.close()
@@ -3310,12 +3329,6 @@ if __name__ == "__main__":
         # Own taskbar identity, so Windows shows Vault's icon rather than Python's (when run from source).
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Vault.PasswordManager")
-    # Settings → Text size (must be set before the QApplication exists). Always set or clear it: a copy
-    # started by "Restart now" inherits the previous copy's environment, including its old size.
-    if ui_scale() != 1.0:
-        os.environ["QT_SCALE_FACTOR"] = str(ui_scale())
-    else:
-        os.environ.pop("QT_SCALE_FACTOR", None)
     app = QApplication(sys.argv)
     use_system_ui_font()
     # On macOS this is also the Dock icon, so use the version drawn on Apple's icon grid (with its

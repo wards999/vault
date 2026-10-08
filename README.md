@@ -34,6 +34,8 @@ Then choose your database file, type your master password and click **Unlock**.
 - **Site icons:** downloaded from each website and saved in the database, so KeePass and KeePassXC
   show them too.
 - **Themes:** light, dark and several colour themes.
+- **List text size:** make the entry list, folders and notes smaller or larger (80–160%), live, with
+  Ctrl + mouse wheel, Ctrl+= / Ctrl+− (Ctrl+0 for normal) or in Settings. Folders show their KeePass icons.
 
 ## Keeping your passwords safe
 
