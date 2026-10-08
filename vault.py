@@ -933,13 +933,13 @@ class VaultView(QWidget):
         self.folder = None
 
         root = QHBoxLayout(self)
-        root.setContentsMargins(12, 20, 24, 24)
+        root.setContentsMargins(12, 8, 24, 12)
         root.setSpacing(0)
 
         # Folder tree
         tree_col = QVBoxLayout()
-        tree_col.setSpacing(12)
-        tree_col.setContentsMargins(0, 9, 6, 9)  # was ~9 px on every side; top/bottom kept to line up with the right
+        tree_col.setSpacing(8)
+        tree_col.setContentsMargins(0, 0, 6, 0)  # compact; the "Folders" heading lines up with the list's heading
         tree_head = QHBoxLayout()
         self.folders_title = SubtitleLabel("Folders")
         tree_head.addWidget(self.folders_title, 1)
@@ -968,25 +968,22 @@ class VaultView(QWidget):
 
         # Header, table, notes
         right = QVBoxLayout()
-        right.setSpacing(12)
+        right.setContentsMargins(4, 0, 0, 0)
+        right.setSpacing(8)
         head = QHBoxLayout()
         head.setSpacing(8)
-        titles = QVBoxLayout()
-        titles.setSpacing(0)
+        # One line: folder name, then "302 entries · All changes saved" beside it (it used to take two).
+        titles = QHBoxLayout()
+        titles.setSpacing(10)
         self.list_title = SubtitleLabel("")
-        titles.addWidget(self.list_title)
-        sub = QHBoxLayout()
-        sub.setSpacing(12)
         self.count = caption("")
-        sub.addWidget(self.count)
         self.save_status = caption("")
-        sub.addWidget(self.save_status)
-        sub.addStretch(1)
-        titles.addLayout(sub)
-        head.addLayout(titles, 1)
-        # The title texts may be cut off rather than push the buttons over each other when narrow.
         for label in (self.list_title, self.count, self.save_status):
-            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+            titles.addWidget(label, 0, Qt.AlignVCenter)
+            # Cut off rather than push the buttons over each other when the window is narrow.
+            label.setMinimumWidth(1 if label is not self.list_title else 40)
+        titles.addStretch(1)
+        head.addLayout(titles, 1)
         self.search = SearchLineEdit()
         self.search.setPlaceholderText("Search all folders")
         self.search.setMinimumWidth(150)  # shrinks before anything overlaps (see _fit_header)
