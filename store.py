@@ -231,7 +231,7 @@ class Op:
     Entries:  "create", "update", "trash" (to the Recycle Bin), "delete" (permanent),
               "move" (to `folder`), "insert" (restore/duplicate from `element`), "set_icon".
     Folders:  "folder_create", "folder_rename", "folder_trash", "folder_delete",
-              "folder_move" (to parent `folder`), "folder_insert".
+              "folder_move" (to parent `folder`), "folder_insert", "folder_icon".
     """
     kind: str
     uuid: str
@@ -241,8 +241,9 @@ class Op:
     base_mtime: object = None  # entry's modified time when the user started the edit
     title: str = ""  # for messages
     element: bytes = None  # serialized XML for "insert" / "folder_insert"
-    icon: object = None  # "set_icon": PNG bytes (new image), str (existing icon UUID) or "" (none)
+    icon: object = None  # "set_icon"/"folder_icon": PNG bytes (new image), str (existing icon UUID) or "" (none)
     icon_name: str = ""  # e.g. the site's domain, stored with new icons in KDBX 4.1
+    icon_id: object = None  # "set_icon"/"folder_icon": KeePass standard icon number to set (None = leave as is)
 
 
 @dataclass
@@ -402,12 +403,19 @@ def apply_op(kp, op, force=False):
         if entry.group.uuid != target.uuid:
             kp.move_entry(entry, target)
     elif kind == "set_icon":
-        if isinstance(op.icon, (bytes, bytearray)):
-            icon_uuid = _icon_uuid_for(kp, bytes(op.icon), op.icon_name)
-        else:
-            icon_uuid = op.icon or ""
-        _set_custom_icon(entry._element, icon_uuid)
+        _apply_icon(kp, entry, op)
     return None
+
+
+def _apply_icon(kp, element, op):
+    """Sets an entry's or group's icon: a custom image (op.icon) and/or a standard icon (op.icon_id)."""
+    if op.icon_id is not None:
+        element.icon = str(op.icon_id)
+    if isinstance(op.icon, (bytes, bytearray)):
+        icon_uuid = _icon_uuid_for(kp, bytes(op.icon), op.icon_name)
+    else:
+        icon_uuid = op.icon or ""
+    _set_custom_icon(element._element, icon_uuid)
 
 
 def _apply_folder_op(kp, op):
@@ -428,6 +436,9 @@ def _apply_folder_op(kp, op):
         return
     if kind == "folder_rename":
         group.name = op.fields.get("name") or group.name
+        group.touch(modify=True)
+    elif kind == "folder_icon":
+        _apply_icon(kp, group, op)
         group.touch(modify=True)
     elif kind == "folder_trash":
         kp.move_group(group, _recycle_bin(kp))
@@ -461,6 +472,9 @@ def inverse_op(kp, op):
         parent = _folder_id(kp, group.parentgroup)
         if kind == "folder_rename":
             return Op("folder_rename", op.uuid, fields={"name": group.name or ""}, title=op.title)
+        if kind == "folder_icon":
+            icon_id, custom = icon_ref(group, FOLDER_ICON)
+            return Op("folder_icon", op.uuid, icon=custom or "", icon_id=icon_id, title=op.title)
         if kind in ("folder_trash", "folder_move"):
             return Op("folder_move", op.uuid, folder=parent, title=op.title)
         if kind == "folder_delete":
@@ -480,7 +494,9 @@ def inverse_op(kp, op):
     if kind == "delete":
         return Op("insert", op.uuid, folder=folder, title=op.title, element=etree.tostring(entry._element))
     if kind == "set_icon":
-        return Op("set_icon", op.uuid, icon=entry._element.findtext("CustomIconUUID") or "", title=op.title)
+        icon_id, custom = icon_ref(entry, 0)
+        return Op("set_icon", op.uuid, icon=custom or "", icon_id=icon_id if op.icon_id is not None else None,
+                  title=op.title)
     return None
 
 

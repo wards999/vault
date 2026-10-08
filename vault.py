@@ -28,7 +28,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout, QTreeWidgetItem, QTreeWidgetItemIterator,
     QFileDialog, QHeaderView, QAbstractItemView, QSplitter, QSplitterHandle, QLineEdit, QTableWidgetItem,
-    QStyledItemDelegate, QDialog, QGraphicsDropShadowEffect, QSizePolicy,
+    QStyledItemDelegate, QDialog, QGraphicsDropShadowEffect, QSizePolicy, QGridLayout, QButtonGroup,
 )
 from qfluentwidgets import (
     FluentWindow, NavigationItemPosition, FluentIcon as FIF, setTheme, Theme,
@@ -1529,6 +1529,25 @@ class VaultView(QWidget):
             self.window().saver.submit(Op("folder_rename", folder_id, fields={"name": dialog.name}, title=dialog.name),
                                        f"Rename of “{record['name']}”")
 
+    def change_folder_icon(self, folder_id):
+        record = self._folder_record(folder_id)
+        if not record or not self._editable():
+            return
+        dialog = IconPickerDialog(self.window(), f"Icon for folder “{record['name']}”",
+                                  record.get("icon", (store.FOLDER_ICON, None)), "Plain folder", store.FOLDER_ICON)
+        if dialog.exec() and dialog.choice:
+            self.window().saver.submit(Op("folder_icon", folder_id, title=record["name"], **dialog.choice),
+                                       f"Icon of folder “{record['name']}”")
+
+    def change_entry_icon(self):
+        e = self.current_entry()
+        if not e or not self._editable():
+            return
+        dialog = IconPickerDialog(self.window(), f"Icon for “{e['title']}”", e["icon"], "Default (letter)", 0)
+        if dialog.exec() and dialog.choice:
+            self.window().saver.submit(Op("set_icon", e["uuid"], title=e["title"], **dialog.choice),
+                                       f"Icon of “{e['title']}”")
+
     def delete_folder(self, folder_id):
         record = self._folder_record(folder_id)
         if not record or not self._editable() or folder_id == self.db.bin_id:
@@ -1605,6 +1624,8 @@ class VaultView(QWidget):
                                   triggered=lambda: self.new_folder(folder_id)))
         if folder_id is not None and not is_bin:
             menu.addAction(Action(FIF.EDIT, "Rename…", triggered=lambda: self.rename_folder(folder_id)))
+            menu.addAction(Action(icon("PHOTO", "PALETTE"), "Change icon…",
+                                  triggered=lambda: self.change_folder_icon(folder_id)))
             menu.addAction(Action(icon("MOVE", "FOLDER"), "Move to…", triggered=lambda: self.move_folder(folder_id)))
             menu.addSeparator()
             permanent = in_bin or not self.db.recycle_bin_enabled
@@ -1678,6 +1699,7 @@ class VaultView(QWidget):
             fetch = Action(icon("GLOBE", "PHOTO"), "Download site icon", triggered=self.download_icon)
             fetch.setEnabled(bool(favicon.site_host(e["url"])))
             menu.addAction(fetch)
+            menu.addAction(Action(icon("PHOTO", "PALETTE"), "Change icon…", triggered=self.change_entry_icon))
             permanent = e["in_bin"] or not self.db.recycle_bin_enabled
             delete = Action(FIF.DELETE, "Delete permanently…" if permanent else "Move to Recycle Bin…",
                             triggered=self.delete_entry)
@@ -2186,6 +2208,95 @@ class NameDialog(MessageBoxBase):
     def validate(self):
         self.name = self.edit.text().strip()
         return bool(self.name)
+
+
+class IconPickerDialog(MessageBoxBase):
+    """Choose an entry's or folder's icon: one of KeePass's standard icons (as KeePass and KeePassXC
+    show them), the default, or an image file. After exec(), `choice` holds the Op fields to apply."""
+
+    COLUMNS = 12
+
+    def __init__(self, parent, title, current, default_label, default_id):
+        super().__init__(parent)
+        self.choice = None
+        self.default_id = default_id
+        current_id, current_custom = current
+        self.viewLayout.setSpacing(10)
+        self.viewLayout.addWidget(SubtitleLabel(title))
+        self.viewLayout.addWidget(caption("KeePass's standard icons: they show the same in KeePass and KeePassXC."))
+
+        grid = QGridLayout()
+        grid.setSpacing(4)
+        self.buttons = QButtonGroup(self)
+        for number, path in sorted(self._standard_icons().items()):
+            button = TransparentToggleToolButton(QIcon(str(path)))
+            button.setFixedSize(40, 40)
+            button.setIconSize(QSize(24, 24))
+            button.setToolTip(path.stem.split("_", 1)[-1].replace("_", " "))
+            button.setChecked(current_custom is None and number == current_id and number != default_id)
+            self.buttons.addButton(button, number)
+            grid.addWidget(button, number // self.COLUMNS, number % self.COLUMNS)
+        self.buttons.idClicked.connect(self._standard_chosen)
+        self.viewLayout.addLayout(grid)
+
+        row = QHBoxLayout()
+        default = PushButton(default_label)
+        default.clicked.connect(self._default_chosen)
+        row.addWidget(default)
+        image = PushButton(icon("PHOTO", "FOLDER"), "Use an image file…")
+        image.clicked.connect(self._image_chosen)
+        row.addWidget(image)
+        row.addStretch(1)
+        self.chosen = caption("")
+        row.addWidget(self.chosen)
+        self.viewLayout.addLayout(row)
+        self.yesButton.setText("Apply")
+        self.cancelButton.setText("Cancel")
+        self.yesButton.setEnabled(False)  # until something is chosen
+        self.widget.setMinimumWidth(self.COLUMNS * 44 + 60)
+
+    @staticmethod
+    def _standard_icons():
+        icons = {}
+        for path in STANDARD_ICON_DIR.glob("C*.svg"):
+            match = re.match(r"C(\d+)_", path.name)
+            if match:
+                icons[int(match.group(1))] = path
+        return icons
+
+    def _set(self, choice, label):
+        self.choice = choice
+        self.chosen.setText(label)
+        self.yesButton.setEnabled(True)
+
+    def _uncheck_all(self):
+        self.buttons.setExclusive(False)
+        for button in self.buttons.buttons():
+            button.setChecked(False)
+        self.buttons.setExclusive(True)
+
+    def _standard_chosen(self, number):
+        self._set({"icon": "", "icon_id": number}, f"Chosen: {self.buttons.button(number).toolTip()}")
+
+    def _default_chosen(self):
+        self._uncheck_all()
+        self._set({"icon": "", "icon_id": self.default_id}, "Chosen: default")
+
+    def _image_chosen(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Choose an icon image", str(Path.home()),
+                                              "Images (*.png *.jpg *.jpeg *.ico *.bmp *.gif *.svg)")
+        if not path:
+            return
+        try:
+            png = favicon._to_png(Path(path).read_bytes())
+        except OSError:
+            png = None
+        if not png:
+            InfoBar.warning("Icon", "That file isn't an image Vault can use.", orient=Qt.Horizontal,
+                            isClosable=True, position=InfoBarPosition.TOP_RIGHT, duration=3000, parent=self.window())
+            return
+        self._uncheck_all()
+        self._set({"icon": png, "icon_name": Path(path).stem}, f"Chosen: {Path(path).name}")
 
 
 class FolderPickerDialog(MessageBoxBase):
