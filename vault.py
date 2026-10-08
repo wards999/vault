@@ -380,6 +380,7 @@ PASSWORD_COLORS = {  # (light theme, dark theme); lowercase uses the normal text
     "digit": ("#d13800", "#ff8a3d"),   # orange-red
     "symbol": ("#008a2e", "#3ddc6e"),  # green
 }
+PASSWORD_PLAIN = ("#555555", "#bdbdbd")  # lowercase: grey, so the coloured characters stand out
 
 
 def char_kind(ch):
@@ -439,7 +440,7 @@ class EntryDelegate(TableItemDelegate):
             return
         password = self.model.data(index, Qt.UserRole)["password"]
         dark = isDarkTheme()
-        normal = QColor(Qt.white if dark else Qt.black)
+        normal = QColor(PASSWORD_PLAIN[dark] if self.colorize else (Qt.white if dark else Qt.black))
         painter.save()
         painter.setFont(self.mono)
         fm = painter.fontMetrics()
@@ -1795,12 +1796,14 @@ class ColoredPasswordEdit(LineEdit):
             cursor = self.cursorPosition()
             for i, ch in enumerate(self.text()):
                 kind = char_kind(ch)
+                fmt = QTextCharFormat()
                 if kind in PASSWORD_COLORS:
-                    fmt = QTextCharFormat()
                     fmt.setForeground(QColor(PASSWORD_COLORS[kind][dark]))
                     fmt.setFontWeight(QFont.DemiBold)
-                    attributes.append(QInputMethodEvent.Attribute(
-                        QInputMethodEvent.TextFormat, i - cursor, 1, fmt))
+                else:
+                    fmt.setForeground(QColor(PASSWORD_PLAIN[dark]))
+                attributes.append(QInputMethodEvent.Attribute(
+                    QInputMethodEvent.TextFormat, i - cursor, 1, fmt))
         QApplication.sendEvent(self, QInputMethodEvent("", attributes))
 
 
