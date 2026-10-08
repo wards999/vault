@@ -2882,6 +2882,7 @@ class MainWindow(FluentWindow):
         self.locked = True
         self._copied = None
         self.quick = None  # quickunlock.Sealed: the master password, encrypted in memory, until Vault quits
+        self._live_resize = False  # Windows: dragging the left edge (see nativeEvent)
 
         self.vault = VaultView()
         self.addSubInterface(self.vault, FIF.HOME, "Vault")
@@ -2955,14 +2956,35 @@ class MainWindow(FluentWindow):
         edges the controls jump sideways until Vault redraws. Telling Windows to keep only a 1-pixel
         "valid" area makes it copy nothing, so each frame shows Vault's own redraw."""
         handled, result = super().nativeEvent(eventType, message)
-        if sys.platform == "win32" and handled:
-            msg = MSG.from_address(int(message))
+        if sys.platform != "win32":
+            return handled, result
+        msg = MSG.from_address(int(message))
+        live = getattr(self, "_live_resize", None)  # None while the window is still being created
+        if msg.message == 0x0214 and msg.wParam in (1, 4, 7) and live is False:
+            # WM_SIZING from the left edge or a left corner: hide the right-aligned controls (which
+            # would otherwise lag a frame behind and jump) until the drag ends.
+            self._set_live_resize(True)
+        elif msg.message == 0x0232 and live:  # WM_EXITSIZEMOVE: drag finished
+            self._set_live_resize(False)
+        if handled:
             if msg.message == 0x0083 and msg.wParam:  # WM_NCCALCSIZE, while resizing/moving
                 params = cast(msg.lParam, LPNCCALCSIZE_PARAMS).contents
                 r = params.rgrc[0]  # the new client area (already adjusted by the library)
                 params.rgrc[1] = params.rgrc[2] = RECT(r.left, r.top, r.left + 1, r.top + 1)
                 return True, 0x0400  # WVR_VALIDRECTS
         return handled, result
+
+    def _live_resize_widgets(self):
+        v, bar = self.vault, self.titleBar
+        return [v.search, v.reveal, v.check_btn, v.new_btn, bar.minBtn, bar.maxBtn, bar.closeBtn]
+
+    def _set_live_resize(self, on):
+        self._live_resize = on
+        for widget in self._live_resize_widgets():
+            policy = widget.sizePolicy()
+            policy.setRetainSizeWhenHidden(True)  # keep their space, so nothing else moves
+            widget.setSizePolicy(policy)
+            widget.setVisible(not on)
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
