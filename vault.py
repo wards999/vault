@@ -918,7 +918,8 @@ class VaultView(QWidget):
         tree_col = QVBoxLayout()
         tree_col.setSpacing(12)
         tree_head = QHBoxLayout()
-        tree_head.addWidget(SubtitleLabel("Folders"), 1)
+        self.folders_title = SubtitleLabel("Folders")
+        tree_head.addWidget(self.folders_title, 1)
         self.new_folder_btn = TransparentToolButton(icon("FOLDER_ADD", "ADD"))
         self.new_folder_btn.setToolTip("New folder")
         self.new_folder_btn.clicked.connect(lambda: self.new_folder())
@@ -1247,6 +1248,36 @@ class VaultView(QWidget):
         i = LIST_TEXT_SIZES.index(self._list_text) + step
         self.set_list_text_size(LIST_TEXT_SIZES[max(0, min(len(LIST_TEXT_SIZES) - 1, i))])
 
+    def _scale_header(self, k):
+        """The titles, search box and buttons above the lists follow the list text size too, so the page
+        stays in proportion (a small list under full-size buttons looked odd)."""
+        parts = [self.folders_title, self.new_folder_btn, self.list_title, self.count, self.save_status,
+                 self.search, self.reveal, self.check_btn, self.new_btn,
+                 self.notes.title, self.notes.path, self.notes.modified]
+        self.tree.setIconSize(QSize(round(16 * k), round(16 * k)))  # folder icons
+        # Column headings are drawn from the UI library's style sheet (12 px), not the header's font.
+        heading_qss = f"QHeaderView::section {{ font-size: {max(9, round(12 * k))}px; }}"
+        setCustomStyleSheet(self.table, heading_qss, heading_qss)
+        if not hasattr(self, "_header_base"):  # their normal sizes, measured once
+            for part in parts:
+                part.ensurePolished()
+            self._header_base = {
+                part: (part.fontInfo().pixelSize(),
+                       part.height() if part.minimumHeight() == part.maximumHeight() else None,
+                       part.iconSize() if hasattr(part, "iconSize") else None)
+                for part in parts}
+        for part, (px, fixed_height, icon_size) in self._header_base.items():
+            font = QFont(part.font())
+            font.setPixelSize(max(9, round(px * k)))
+            part.setFont(font)
+            if fixed_height:
+                part.setFixedHeight(round(fixed_height * k))
+            if icon_size is not None:
+                part.setIconSize(QSize(round(icon_size.width() * k), round(icon_size.height() * k)))
+        self._header_limits = None  # the buttons' widths changed: re-measure when they drop their text
+        if hasattr(self, "right_box"):
+            self._fit_header(self.right_box.width())
+
     def set_list_text_size(self, size):
         """Text size (% of normal) of the entry list, folder tree and notes; rows grow with it."""
         size = min(LIST_TEXT_SIZES, key=lambda s: abs(s - size))
@@ -1261,6 +1292,7 @@ class VaultView(QWidget):
         self._set_tree_icons()  # also gives every folder item the font
         notes_qss = f"QPlainTextEdit {{ font-size: {round(self._notes_base_px * k)}px; }}"
         setCustomStyleSheet(self.notes.notes, notes_qss, notes_qss)
+        self._scale_header(k)
         self.table.viewport().update()
         self.listTextChanged.emit(size)
 
