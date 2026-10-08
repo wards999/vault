@@ -3190,6 +3190,9 @@ class MainWindow(FluentWindow):
 
     def _show_unlock(self):
         dialog = UnlockDialog(self, quick=self.quick if self._quick_unlock_on() else None)
+        # The dialog's dark overlay covers the whole window: keep the title bar above it, so Vault can
+        # still be minimised (or maximised, or closed) while it waits for the password.
+        QTimer.singleShot(0, self.titleBar.raise_)
         accepted = dialog.exec() and dialog.db
         if dialog.quick_failed:
             self.quick = None
