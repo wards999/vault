@@ -2931,6 +2931,7 @@ class MainWindow(FluentWindow):
         self._copied = None
         self.quick = None  # quickunlock.Sealed: the master password, encrypted in memory, until Vault quits
         self._live_resize = False  # Windows: dragging the left edge (see nativeEvent)
+        self._unlock_when_restored = False  # locked while minimised: ask for the password when reopened
 
         self.vault = VaultView()
         self.addSubInterface(self.vault, FIF.HOME, "Vault")
@@ -2994,6 +2995,9 @@ class MainWindow(FluentWindow):
                 QTimer.singleShot(1500, lambda: self.isMinimized() and trim_memory())
             elif self.privacy_cover.isVisible():
                 QTimer.singleShot(self.COVER_DELAY_MS, self._uncover)
+            if not self.isMinimized() and getattr(self, "_unlock_when_restored", False):
+                self._unlock_when_restored = False
+                QTimer.singleShot(self.COVER_DELAY_MS, self._show_unlock)
 
     def _uncover(self):
         if not self.isMinimized():
@@ -3127,7 +3131,10 @@ class MainWindow(FluentWindow):
         self.setWindowTitle("Vault")
         self.switchTo(self.vault)
         if self.isMinimized():
-            self.showNormal()
+            # Locked while minimised (e.g. after being left alone): stay minimised, and ask for the
+            # password when the window is next opened (see changeEvent).
+            self._unlock_when_restored = True
+            return
         self._show_unlock()
 
     def _set_quick_unlock(self, on):
