@@ -2212,6 +2212,181 @@ class IconFetcher(QObject):
                      duration=5000, parent=self.window)
 
 
+class FindIconsDialog(MessageBoxBase):
+    """Finds the website and icon for entries that have no website, from their names (see
+    sitefinder.py): a grid of guesses to tick or correct. Apply leaves the changes in `ops`."""
+
+    USE, ENTRY, SITE, ICON, STATUS = range(5)
+    result = Signal(int, int, object, object)  # row, request number, domain, PNG (from worker threads)
+
+    def __init__(self, parent, entries):
+        import sitefinder  # loaded only when this (occasional) tool is opened
+        super().__init__(parent)
+        self.entries = entries
+        self.ops = []
+        self._requests = [0] * len(entries)  # newest request per row; older answers are ignored
+        self._typed = set()  # rows whose website the user typed: never replaced by a new guess
+        self._pending = 0
+        self._filling = False
+        self._pool = ThreadPoolExecutor(8)
+        self.result.connect(self._on_result)
+
+        self.viewLayout.setSpacing(10)
+        self.viewLayout.addWidget(SubtitleLabel("Find site icons"))
+        self.viewLayout.addWidget(caption(
+            "For entries without a website, Vault guesses the site from the entry's name and gets its icon. "
+            "Untick any that are wrong, or type the right website, then Apply."))
+        top = QHBoxLayout()
+        top.addWidget(BodyLabel("Country"))
+        self.country = ComboBox()
+        self.country.addItems(list(sitefinder.COUNTRIES))
+        saved = setting("icon_country", sitefinder.DEFAULT_COUNTRY)
+        self.country.setCurrentText(saved if saved in sitefinder.COUNTRIES else sitefinder.DEFAULT_COUNTRY)
+        self.country.currentTextChanged.connect(self._country_changed)
+        top.addWidget(self.country)
+        top.addStretch(1)
+        self.progress = caption("")
+        top.addWidget(self.progress)
+        self.viewLayout.addLayout(top)
+
+        self.table = TableWidget()
+        self.table.setColumnCount(5)
+        self.table.setHorizontalHeaderLabels(["Use", "Entry", "Suggested website", "Icon", ""])
+        self.table.setRowCount(len(entries))
+        self.table.verticalHeader().hide()
+        self.table.setWordWrap(False)
+        self.table.setBorderVisible(True)
+        self.table.setBorderRadius(8)
+        self.table.setIconSize(QSize(20, 20))
+        header = self.table.horizontalHeader()
+        for col, width in ((self.USE, 56), (self.ENTRY, 260), (self.SITE, 260), (self.ICON, 56)):
+            header.setSectionResizeMode(col, QHeaderView.Interactive)
+            self.table.setColumnWidth(col, width)
+        header.setStretchLastSection(True)
+        self._filling = True
+        for row, e in enumerate(entries):
+            use = QTableWidgetItem()
+            use.setFlags(Qt.ItemIsEnabled | Qt.ItemIsUserCheckable)
+            use.setCheckState(Qt.Unchecked)
+            name = QTableWidgetItem(e["title"])
+            name.setFlags(Qt.ItemIsEnabled)
+            name.setToolTip(" › ".join(e["path"]) or "Root")
+            site = QTableWidgetItem("")
+            site.setToolTip("Type or correct the website, e.g. bbc.co.uk")
+            for col, item in ((self.USE, use), (self.ENTRY, name), (self.SITE, site)):
+                self.table.setItem(row, col, item)
+            for col in (self.ICON, self.STATUS):
+                item = QTableWidgetItem("")
+                item.setFlags(Qt.ItemIsEnabled)
+                self.table.setItem(row, col, item)
+        self._filling = False
+        self.table.itemChanged.connect(self._item_changed)
+        self.viewLayout.addWidget(self.table, 1)
+
+        self.fill_url = CheckBox("Also fill in the Website field of the entries you tick")
+        self.fill_url.setChecked(setting("icon_fill_url", True))
+        self.fill_url.toggled.connect(lambda on: settings.setValue("icon_fill_url", on))
+        self.viewLayout.addWidget(self.fill_url)
+        self.yesButton.setText("Apply")
+        self.cancelButton.setText("Close")
+        self.widget.setMinimumSize(min(900, int(parent.width() * 0.9)), int(parent.height() * 0.8))
+        QTimer.singleShot(0, self.search)
+
+    # ---- searching
+    def _country_changed(self, country):
+        settings.setValue("icon_country", country)
+        self.search()
+
+    def search(self):
+        """Guesses every row's website from its name (again), for the chosen country."""
+        import sitefinder
+        country = self.country.currentText()
+        ddg = setting("icons_duckduckgo", False)
+        for row, e in enumerate(self.entries):
+            if row not in self._typed:
+                self._request(row, "Searching…", lambda title=e["title"]: sitefinder.find(title, country, ddg))
+
+    def _request(self, row, status, job):
+        self._requests[row] += 1
+        number = self._requests[row]
+        self._set_status(row, status)
+        self._pending += 1
+        self._update_progress()
+
+        def run():
+            try:
+                domain, png = job()
+            except Exception:
+                domain, png = None, None
+            self.result.emit(row, number, domain, png)  # delivered on the GUI thread
+        self._pool.submit(run)
+
+    def _on_result(self, row, number, domain, png):
+        self._pending -= 1
+        self._update_progress()
+        if number != self._requests[row]:
+            return  # superseded (country changed, or the website was edited meanwhile)
+        self._filling = True
+        if domain:
+            self.table.item(row, self.SITE).setText(domain)
+        icon_item = self.table.item(row, self.ICON)
+        icon_item.setData(Qt.UserRole, png)
+        pixmap = QPixmap()
+        icon_item.setIcon(QIcon(pixmap) if png and pixmap.loadFromData(png) else QIcon())
+        self.table.item(row, self.USE).setCheckState(Qt.Checked if png else Qt.Unchecked)
+        self._filling = False
+        self._set_status(row, "Found" if png else "No match: type the website")
+
+    def _item_changed(self, item):
+        if self._filling or item.column() != self.SITE:
+            return
+        import sitefinder
+        typed = item.text().strip()
+        if typed:
+            self._typed.add(item.row())
+        else:
+            self._typed.discard(item.row())  # cleared: guess this one again next time
+        ddg = setting("icons_duckduckgo", False)
+        self._filling = True
+        self.table.item(item.row(), self.ICON).setData(Qt.UserRole, None)
+        self.table.item(item.row(), self.ICON).setIcon(QIcon())
+        self.table.item(item.row(), self.USE).setCheckState(Qt.Unchecked)
+        self._filling = False
+        if typed:
+            self._request(item.row(), "Checking…", lambda: sitefinder.icon_for(typed, ddg))
+        else:
+            self._set_status(item.row(), "")
+
+    def _set_status(self, row, text):
+        self.table.item(row, self.STATUS).setText(text)
+
+    def _update_progress(self):
+        self.progress.setText(f"Searching… {self._pending} left" if self._pending else
+                              f"{sum(1 for r in range(self.table.rowCount()) if self._icon(r))} of "
+                              f"{len(self.entries)} found")
+
+    def _icon(self, row):
+        return self.table.item(row, self.ICON).data(Qt.UserRole)
+
+    # ---- applying
+    def validate(self):
+        fill = self.fill_url.isChecked()
+        for row, e in enumerate(self.entries):
+            png = self._icon(row)
+            host = favicon.site_host(self.table.item(row, self.SITE).text())
+            if self.table.item(row, self.USE).checkState() != Qt.Checked or not png or not host:
+                continue
+            self.ops.append(Op("set_icon", e["uuid"], icon=png, icon_name=host, title=e["title"]))
+            if fill and not e["url"]:
+                self.ops.append(Op("update", e["uuid"], fields={"url": f"https://{host}"},
+                                   base_mtime=e["base_mtime"], title=e["title"]))
+        return True
+
+    def done(self, code):
+        self._pool.shutdown(wait=False, cancel_futures=True)  # stop searching when the dialog closes
+        super().done(code)
+
+
 class ConflictDialog(MessageBoxBase):
     """Asks what to do when an entry was changed or deleted elsewhere. `choice` is set to
     "mine", "theirs" or "both"."""
@@ -2677,7 +2852,7 @@ class HealthView(QWidget):
 
 class SettingsView(ScrollArea):
     def __init__(self, on_colorize, on_density, on_fetch_missing, on_refresh_icons, on_quick_unlock, on_idle_minutes,
-                 on_list_text, parent=None):
+                 on_list_text, on_find_icons, parent=None):
         super().__init__(parent)
         self.setObjectName("view-settings")
         self.setWidgetResizable(True)
@@ -2780,6 +2955,11 @@ class SettingsView(ScrollArea):
         b.addWidget(refresh)
         root.addWidget(self._row("Update icons", "For entries that have a website address. Refreshing picks up "
                                  "sites that have changed their icon.", buttons))
+        finder = PushButton(FIF.SEARCH, "Find icons by name…")
+        finder.clicked.connect(on_find_icons)
+        root.addWidget(self._row(
+            "Entries without a website", "Guess each entry's website from its name (e.g. “British Gas” → "
+            "britishgas.co.uk) and get its icon. You check every guess before anything changes.", finder))
         root.addStretch(1)
         root.addWidget(caption(f"Vault {VERSION}"), 0, Qt.AlignRight)
 
@@ -3101,7 +3281,8 @@ class MainWindow(FluentWindow):
                                           on_refresh_icons=lambda: self.fetch_icons(missing_only=False),
                                           on_quick_unlock=self._set_quick_unlock,
                                           on_idle_minutes=lambda minutes: self.idle.set_minutes(minutes),
-                                          on_list_text=self.vault.set_list_text_size)
+                                          on_list_text=self.vault.set_list_text_size,
+                                          on_find_icons=self.find_icons_by_name)
         self.addSubInterface(self.settings_view, FIF.SETTING, "Settings", NavigationItemPosition.BOTTOM)
         self.vault.listTextChanged.connect(self.settings_view.show_list_text_size)
         self.icons = IconFetcher(self)
@@ -3242,6 +3423,24 @@ class MainWindow(FluentWindow):
                          position=InfoBarPosition.TOP_RIGHT, duration=3000, parent=self)
             return
         self.icons.fetch(entries, "Missing icons download" if missing_only else "Icon refresh")
+
+    def find_icons_by_name(self):
+        """Settings → Find icons by name: guesses websites for entries that have none (see FindIconsDialog)."""
+        db = self.saver.db
+        if db is None or not db.writable:
+            InfoBar.info("Find site icons", "Unlock an editable database first.", orient=Qt.Horizontal,
+                         isClosable=True, position=InfoBarPosition.TOP_RIGHT, duration=3000, parent=self)
+            return
+        entries = [e for e in db.entries if not e["in_bin"] and e["title"].strip() and not favicon.site_host(e["url"])]
+        if not entries:
+            InfoBar.info("Find site icons", "Every entry already has a website.", orient=Qt.Horizontal,
+                         isClosable=True, position=InfoBarPosition.TOP_RIGHT, duration=3000, parent=self)
+            return
+        dialog = FindIconsDialog(self, entries)
+        if dialog.exec() and dialog.ops:
+            self.saver.submit_many(dialog.ops, "Find site icons")
+            count = sum(op.kind == "set_icon" for op in dialog.ops)
+            self.undo_toast(f"Added {count} site icon{'s' if count != 1 else ''}", "From Find site icons.")
 
     def undo_toast(self, title, detail):
         """A confirmation message with an Undo button."""

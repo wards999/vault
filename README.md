@@ -32,7 +32,9 @@ Then choose your database file, type your master password and click **Unlock**.
 - **Password health report:** weak, reused, expired and empty passwords, and passwords not changed in
   over a year.
 - **Site icons:** downloaded from each website and saved in the database, so KeePass and KeePassXC
-  show them too.
+  show them too. For entries without a website, **Settings → Find icons by name** guesses the site
+  from each entry's name (for your country, e.g. `.co.uk` first) and shows the guesses in a grid to
+  tick or correct before anything changes; it can fill in the Website fields too.
 - **Themes:** light, dark and several colour themes.
 - **List text size:** make the entry list, folders and notes smaller or larger (80–160%), live, with
   Ctrl + mouse wheel, Ctrl+= / Ctrl+− (Ctrl+0 for normal) or in Settings. Folders show their KeePass icons.
