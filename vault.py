@@ -38,7 +38,7 @@ from qfluentwidgets import (
     PushButton, PrimaryPushButton, SwitchButton, CheckBox, Slider, ProgressBar,
     SegmentedWidget, InfoBar, InfoBarIcon, InfoBarPosition, MessageBox, MessageBoxBase, TreeWidget,
     TableView, RoundMenu, Action, qconfig, getFont, SmoothMode, ComboBox, setCustomStyleSheet,
-    setThemeColor, themeColor, ProgressRing, ListWidget, CardWidget, TableWidget, ScrollArea,
+    setThemeColor, themeColor, ProgressRing, ListWidget, CardWidget, TableWidget, ScrollArea, setFontFamilies,
 )
 from qfluentwidgets.components.widgets.table_view import TableItemDelegate
 
@@ -206,6 +206,31 @@ def cache_svg_icons():
 
 cache_svg_icons()
 
+# Fonts: name exactly one font that the system has. Lists with fonts that aren't installed (the UI
+# library's default "Segoe UI, Microsoft YaHei, PingFang SC", or "Cascadia Mono, Consolas, Menlo…")
+# make Qt load the details of every font on the computer: about 40 MB each, kept for good.
+MONO_FAMILY = "Menlo" if sys.platform == "darwin" else "Consolas"  # built into every Mac / Windows
+
+
+def trim_memory():
+    """Vault runs all day, mostly minimised or locked: then hand the memory it isn't using back to the
+    system. Windows: empty the working set (pages come back as soon as they're needed). macOS does
+    the equivalent by itself, compressing idle apps' memory."""
+    import gc
+    gc.collect()
+    if sys.platform == "win32":
+        import ctypes
+        kernel32, psapi = ctypes.windll.kernel32, ctypes.windll.psapi
+        kernel32.GetCurrentProcess.restype = ctypes.c_void_p
+        psapi.EmptyWorkingSet.argtypes = [ctypes.c_void_p]
+        psapi.EmptyWorkingSet(kernel32.GetCurrentProcess())
+
+
+def use_system_ui_font():
+    """Called once the QApplication exists (it's needed to ask for the system font)."""
+    family = "Segoe UI" if sys.platform == "win32" else QFontDatabase.systemFont(QFontDatabase.GeneralFont).family()
+    setFontFamilies([family])
+
 
 def google_drive_folder():
     """Google Drive for Desktop's "My Drive" folder, if present (G: on Windows, CloudStorage on macOS)."""
@@ -343,8 +368,8 @@ class EntryDelegate(TableItemDelegate):
         super().__init__(view)
         self.model = model
         self.colorize = setting("color_passwords", True)
-        self.mono = QFontDatabase.systemFont(QFontDatabase.FixedFont)
-        self.mono.setFamilies(["Cascadia Mono", "Consolas", "Menlo", "SF Mono", self.mono.family()])
+        self.mono = QFont(MONO_FAMILY)
+        self.mono.setStyleHint(QFont.TypeWriter)
         self.mono.setPixelSize(14)
         self.font = getFont(13)
         self._update_text_color()
@@ -1483,7 +1508,7 @@ def run_in_background(parent, fn, on_done):
 
 
 def mono_font_qss(size=15):
-    return f"font-family: 'Cascadia Mono', 'Consolas', 'Menlo', 'SF Mono', monospace; font-size: {size}px;"
+    return f"font-family: '{MONO_FAMILY}', monospace; font-size: {size}px;"
 
 
 class ColoredPasswordEdit(LineEdit):
@@ -2872,6 +2897,7 @@ class MainWindow(FluentWindow):
     COVER_DELAY_MS = 150  # time for the covered frame to reach the screen before minimising
 
     def __init__(self):
+        use_system_ui_font()  # before any widget asks for a font
         super().__init__()
         if sys.platform == "darwin":
             self._use_mac_window_controls()
@@ -2943,6 +2969,7 @@ class MainWindow(FluentWindow):
         if event.type() == QEvent.WindowStateChange:
             if self.isMinimized():
                 self.privacy_cover.show_over()  # best effort when minimised by the system (e.g. Cmd+M)
+                QTimer.singleShot(1500, lambda: self.isMinimized() and trim_memory())
             elif self.privacy_cover.isVisible():
                 QTimer.singleShot(self.COVER_DELAY_MS, self._uncover)
 
@@ -3072,6 +3099,7 @@ class MainWindow(FluentWindow):
         self.locked = True
         self.saver.detach()
         self.vault.clear()
+        QTimer.singleShot(2000, lambda: self.locked and trim_memory())  # the database is gone: give memory back
         self.health.set_db(None)
         self._clear_clipboard()
         self.setWindowTitle("Vault")
@@ -3134,6 +3162,7 @@ if __name__ == "__main__":
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Vault.PasswordManager")
     app = QApplication(sys.argv)
+    use_system_ui_font()
     # On macOS this is also the Dock icon, so use the version drawn on Apple's icon grid (with its
     # margin and shadow); the edge-to-edge version looks oversized next to other Mac apps.
     app.setWindowIcon(QIcon(str(RESOURCE_DIR / "icons" / ("vault.png" if sys.platform == "darwin" else "vault_app.png"))))
