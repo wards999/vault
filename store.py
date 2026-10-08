@@ -185,6 +185,8 @@ def entry_snapshot(e, ids, names, in_bin):
 
     mtime_utc = when("LastModificationTime")
     mtime = mtime_utc.astimezone() if mtime_utc else None
+    ctime_utc = when("CreationTime")
+    ctime = ctime_utc.astimezone() if ctime_utc else None
     expires = times is not None and times.findtext("Expires") == "True"
     expiry = when("ExpiryTime") if expires else None
 
@@ -213,6 +215,8 @@ def entry_snapshot(e, ids, names, in_bin):
         password_changed=changed,
         modified=mtime.strftime("%b %d, %Y %H:%M") if mtime else "",
         modified_key=mtime.isoformat() if mtime else "",
+        created=ctime.strftime("%b %d, %Y %H:%M") if ctime else "",
+        created_key=ctime.isoformat() if ctime else "",
         expires=expiry,
         expired=bool(expires and expiry and datetime.now(timezone.utc) > expiry),
         folder_ids=ids, path=names, in_bin=in_bin, folder_id=ids[-1] if ids else None,

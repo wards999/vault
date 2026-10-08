@@ -39,6 +39,7 @@ from qfluentwidgets import (
     SegmentedWidget, InfoBar, InfoBarIcon, InfoBarPosition, MessageBox, MessageBoxBase, TreeWidget,
     TableView, RoundMenu, Action, qconfig, getFont, SmoothMode, ComboBox, setCustomStyleSheet,
     setThemeColor, themeColor, ProgressRing, ListWidget, CardWidget, TableWidget, ScrollArea, setFontFamilies,
+    CheckableMenu,
 )
 from qfluentwidgets.components.widgets.table_view import TableItemDelegate
 from qfluentwidgets.components.widgets.tree_view import TreeItemDelegate
@@ -617,8 +618,8 @@ class FolderTree(TreeWidget):
 
 
 class EntryModel(QAbstractTableModel):
-    COLUMNS = ["Title", "Username", "Password", "Website", "Folder", "Modified"]
-    TITLE, USERNAME, PASSWORD, WEBSITE, FOLDER, MODIFIED = range(6)
+    COLUMNS = ["Title", "Username", "Password", "Website", "Folder", "Modified", "Created"]
+    TITLE, USERNAME, PASSWORD, WEBSITE, FOLDER, MODIFIED, CREATED = range(7)
     # Sorting is done here in one Python sort; a QSortFilterProxyModel would call data()
     # tens of thousands of times per sort, which made searching and sorting laggy.
     SORT_KEYS = {
@@ -628,6 +629,7 @@ class EntryModel(QAbstractTableModel):
         WEBSITE: lambda e: e["url"].lower(),
         FOLDER: lambda e: e["folder"].lower(),
         MODIFIED: lambda e: e["modified_key"],
+        CREATED: lambda e: e["created_key"],
     }
 
     def __init__(self, parent=None):
@@ -712,7 +714,8 @@ class EntryModel(QAbstractTableModel):
                 return (e["password"] if self.is_revealed(e) else MASK) if e["password"] else ""
             cells = e.get("_cells")
             if cells is None:
-                cells = e["_cells"] = (e["title"], e["username"], "", e["url"], e["folder"], e["modified"])
+                cells = e["_cells"] = (e["title"], e["username"], "", e["url"], e["folder"], e["modified"],
+                                       e["created"])
             return cells[col]
         if role == R_USER:
             return e
@@ -1036,7 +1039,8 @@ class VaultView(QWidget):
         header.setStretchLastSection(True)
         header.setMinimumSectionSize(60)
         for col, width in ((EntryModel.TITLE, 220), (EntryModel.USERNAME, 200), (EntryModel.PASSWORD, 190),
-                           (EntryModel.WEBSITE, 240), (EntryModel.FOLDER, 160), (EntryModel.MODIFIED, 150)):
+                           (EntryModel.WEBSITE, 240), (EntryModel.FOLDER, 160), (EntryModel.MODIFIED, 150),
+                           (EntryModel.CREATED, 150)):
             self.table.setColumnWidth(col, width)
         # Remember sorting, column widths and column order.
         header.setSectionsMovable(True)
@@ -1048,6 +1052,11 @@ class VaultView(QWidget):
             header.setStretchLastSection(True)
             if header.sectionSize(EntryModel.WEBSITE) < 120:
                 header.resizeSection(EntryModel.WEBSITE, 240)
+        # Which columns are shown: right-click a column heading. Kept as its own setting (applied after
+        # the saved layout), so layouts saved before a column existed still work; Created starts hidden.
+        self._apply_hidden_columns()
+        header.setContextMenuPolicy(Qt.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._columns_menu)
         self.header_timer = QTimer(self, singleShot=True, interval=400,
                                    timeout=lambda: settings.setValue("table_header", header.saveState()))
         header.sortIndicatorChanged.connect(self.header_timer.start)
@@ -1290,6 +1299,38 @@ class VaultView(QWidget):
     def zoom_list_text(self, step):
         i = LIST_TEXT_SIZES.index(self._list_text) + step
         self.set_list_text_size(LIST_TEXT_SIZES[max(0, min(len(LIST_TEXT_SIZES) - 1, i))])
+
+    DEFAULT_HIDDEN_COLUMNS = ["Created"]
+
+    def _hidden_columns(self):
+        hidden = settings.value("hidden_columns")
+        if hidden is None:
+            return list(self.DEFAULT_HIDDEN_COLUMNS)
+        if isinstance(hidden, str):  # QSettings returns a one-item list as a plain string
+            hidden = [hidden] if hidden else []
+        return [name for name in hidden if name in EntryModel.COLUMNS and name != "Title"]
+
+    def _apply_hidden_columns(self):
+        hidden = self._hidden_columns()
+        header = self.table.horizontalHeader()
+        for col, name in enumerate(EntryModel.COLUMNS):
+            header.setSectionHidden(col, name in hidden)
+
+    def set_column_visible(self, name, visible):
+        hidden = [n for n in self._hidden_columns() if n != name] + ([] if visible else [name])
+        settings.setValue("hidden_columns", hidden if hidden else "")
+        self._apply_hidden_columns()
+
+    def _columns_menu(self, pos):
+        """Right-click a column heading: tick the columns to show (Title always stays)."""
+        menu = CheckableMenu(parent=self)  # draws a tick by the shown columns
+        hidden = self._hidden_columns()
+        for name in EntryModel.COLUMNS[1:]:
+            action = Action(name, checkable=True)
+            action.setChecked(name not in hidden)
+            action.triggered.connect(lambda checked, name=name: self.set_column_visible(name, checked))
+            menu.addAction(action)
+        menu.exec(self.table.horizontalHeader().mapToGlobal(pos), ani=False)
 
     def _scale_header(self, k):
         """The titles, search box and buttons above the lists follow the list text size too, so the page
