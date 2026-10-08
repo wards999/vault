@@ -242,6 +242,11 @@ cache_svg_icons()
 MONO_FAMILY = "Menlo" if sys.platform == "darwin" else "Consolas"  # built into every Mac / Windows
 
 
+def shortcut_text(text):
+    """Shortcut text as this system writes it: Qt's Ctrl is the Command key on macOS ("Ctrl+N" → "⌘N")."""
+    return text.replace("Ctrl + ", "⌘ ").replace("Ctrl+", "⌘") if sys.platform == "darwin" else text
+
+
 def trim_memory():
     """Vault runs all day, mostly minimised or locked: then hand the memory it isn't using back to the
     system. Windows: empty the working set (pages come back as soon as they're needed). macOS does
@@ -876,7 +881,7 @@ class NotesPanel(SimpleCardWidget):
         self.totp_left = caption("")
         t.addWidget(self.totp_left)
         copy = TransparentToolButton(FIF.COPY)
-        copy.setToolTip("Copy 2FA code (Ctrl+T)")
+        copy.setToolTip(shortcut_text("Copy 2FA code (Ctrl+T)"))
         copy.clicked.connect(lambda: self.window().vault.copy_totp())
         t.addWidget(copy)
         t.addStretch(1)
@@ -1004,7 +1009,7 @@ class VaultView(QWidget):
         self.check_btn.clicked.connect(self.check_for_changes)
         head.addWidget(self.check_btn, 0, Qt.AlignVCenter)
         self.new_btn = PrimaryPushButton(FIF.ADD, "New entry")
-        self.new_btn.setToolTip("New entry (Ctrl+N)")
+        self.new_btn.setToolTip(shortcut_text("New entry (Ctrl+N)"))
         self.new_btn.clicked.connect(self.new_entry)
         head.addWidget(self.new_btn, 0, Qt.AlignVCenter)
         right.addLayout(head)
@@ -3156,7 +3161,8 @@ class SettingsView(ScrollArea):
             themes.addItem(name, theme_swatch(name))
         themes.setCurrentText(theme_name())
         themes.currentTextChanged.connect(self._set_theme)
-        root.addWidget(self._row("Theme", "Colours for the whole app. System follows Windows' light or dark mode.",
+        system = "macOS's" if sys.platform == "darwin" else "Windows'"
+        root.addWidget(self._row("Theme", f"Colours for the whole app. System follows {system} light or dark mode.",
                                  themes))
         self.list_text = ComboBox()
         self.list_text.addItems([f"{size}%" for size in LIST_TEXT_SIZES])
@@ -3164,8 +3170,8 @@ class SettingsView(ScrollArea):
         self.list_text.currentTextChanged.connect(lambda text: (on_list_text(int(text.rstrip("%"))),
                                                                 self._preview_list_text(int(text.rstrip("%")))))
         row = self._row(
-            "List text size", "Text size of the entry list, folders and notes. Quickest: Ctrl + mouse wheel over "
-            "the list (Ctrl+0 for normal).", self.list_text)
+            "List text size", shortcut_text("Text size of the entry list, folders and notes. Quickest: Ctrl + mouse wheel "
+                                   "over the list (Ctrl+0 for normal)."), self.list_text)
         # A sample entry row at the chosen size, so the change shows here too.
         preview = QHBoxLayout()
         preview.setContentsMargins(0, 6, 0, 0)
