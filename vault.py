@@ -28,7 +28,7 @@ from PySide6.QtGui import (
 from PySide6.QtWidgets import (
     QApplication, QWidget, QHBoxLayout, QVBoxLayout, QTreeWidgetItem, QTreeWidgetItemIterator,
     QFileDialog, QHeaderView, QAbstractItemView, QSplitter, QSplitterHandle, QLineEdit, QTableWidgetItem,
-    QStyledItemDelegate, QDialog, QGraphicsDropShadowEffect,
+    QStyledItemDelegate, QDialog, QGraphicsDropShadowEffect, QSizePolicy,
 )
 from qfluentwidgets import (
     FluentWindow, NavigationItemPosition, FluentIcon as FIF, setTheme, Theme,
@@ -49,6 +49,11 @@ import quickunlock
 import store
 import totp
 from store import Database, Op
+
+if sys.platform == "win32":  # for smooth resizing (MainWindow.nativeEvent)
+    from ctypes import cast
+    from ctypes.wintypes import MSG, RECT
+    from qframelesswindow.windows.c_structures import LPNCCALCSIZE_PARAMS
 
 VERSION = "1.0.4"  # releases are tagged v<VERSION> (see .github/workflows/build.yml)
 IDLE_LOCK_MINUTES = 5
@@ -850,13 +855,18 @@ class VaultView(QWidget):
         sub.addStretch(1)
         titles.addLayout(sub)
         head.addLayout(titles, 1)
+        # The title texts may be cut off rather than push the buttons over each other when narrow.
+        for label in (self.list_title, self.count, self.save_status):
+            label.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
         self.search = SearchLineEdit()
         self.search.setPlaceholderText("Search all folders")
-        self.search.setFixedWidth(280)
+        self.search.setMinimumWidth(150)  # shrinks before anything overlaps (see _fit_header)
+        self.search.setMaximumWidth(280)
+        self.search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
         # Wait for a short pause in typing before filtering.
         self.search_timer = QTimer(self, singleShot=True, interval=120, timeout=self.refresh)
         self.search.textChanged.connect(self.search_timer.start)
-        head.addWidget(self.search, 0, Qt.AlignVCenter)
+        head.addWidget(self.search, 1, Qt.AlignVCenter)  # shares spare room with the titles, up to 280 px
         self.reveal = TransparentTogglePushButton(FIF.VIEW, "Show passwords")
         self.reveal.toggled.connect(self._on_reveal)
         head.addWidget(self.reveal, 0, Qt.AlignVCenter)
@@ -927,6 +937,9 @@ class VaultView(QWidget):
         right_box = QWidget()
         right_box.setLayout(right)
         right_box.setMinimumWidth(400)
+        self.right_box = right_box
+        self._reveal_icon_only = False
+        right_box.installEventFilter(self)  # its resizes drive _fit_header
         self.tree_splitter = GripSplitter(Qt.Horizontal, "tree_splitter", [tree_box, right_box], [240, 1000])
         root.addWidget(self.tree_splitter)
         qconfig.themeChanged.connect(self._set_tree_icons)
@@ -1076,7 +1089,26 @@ class VaultView(QWidget):
     def _on_reveal(self, on):
         self.model.set_show_passwords(on)
         self.reveal.setIcon(FIF.HIDE if on else FIF.VIEW)
-        self.reveal.setText("Hide passwords" if on else "Show passwords")
+        label = "Hide passwords" if on else "Show passwords"
+        self.reveal.setText("" if self._reveal_icon_only else label)
+        self.reveal.setToolTip(label)
+
+    # Header widths (px of the right-hand panel) below which buttons drop their text.
+    REVEAL_TEXT_MIN, NEW_TEXT_MIN = 840, 660
+
+    def eventFilter(self, obj, event):
+        if obj is getattr(self, "right_box", None) and event.type() == QEvent.Resize:
+            self._fit_header(event.size().width())
+        return False
+
+    def _fit_header(self, width):
+        """Keeps the header on one line without overlaps: as the panel narrows, the search box shrinks,
+        then "Show passwords" and "New entry" show only their icons (with tooltips)."""
+        reveal_icon_only, new_icon_only = width < self.REVEAL_TEXT_MIN, width < self.NEW_TEXT_MIN
+        if reveal_icon_only != self._reveal_icon_only:
+            self._reveal_icon_only = reveal_icon_only
+            self._on_reveal(self.reveal.isChecked())
+        self.new_btn.setText("" if new_icon_only else "New entry")
 
     def set_density(self, name):
         row_height, icon_size = ROW_DENSITIES.get(name, ROW_DENSITIES["Comfortable"])
@@ -2879,6 +2911,21 @@ class MainWindow(FluentWindow):
     def _uncover(self):
         if not self.isMinimized():
             self.privacy_cover.hide()
+
+    def nativeEvent(self, eventType, message):
+        """Windows: smooth resizing from the left or top edge. By default Windows first copies the old
+        picture of the window into the resized frame, anchored to the left/top, so while dragging those
+        edges the controls jump sideways until Vault redraws. Telling Windows to keep only a 1-pixel
+        "valid" area makes it copy nothing, so each frame shows Vault's own redraw."""
+        handled, result = super().nativeEvent(eventType, message)
+        if sys.platform == "win32" and handled:
+            msg = MSG.from_address(int(message))
+            if msg.message == 0x0083 and msg.wParam:  # WM_NCCALCSIZE, while resizing/moving
+                params = cast(msg.lParam, LPNCCALCSIZE_PARAMS).contents
+                r = params.rgrc[0]  # the new client area (already adjusted by the library)
+                params.rgrc[1] = params.rgrc[2] = RECT(r.left, r.top, r.left + 1, r.top + 1)
+                return True, 0x0400  # WVR_VALIDRECTS
+        return handled, result
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
