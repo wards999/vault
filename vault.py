@@ -39,7 +39,7 @@ from qfluentwidgets import (
     SegmentedWidget, InfoBar, InfoBarIcon, InfoBarPosition, MessageBox, MessageBoxBase, TreeWidget,
     TableView, RoundMenu, Action, qconfig, getFont, SmoothMode, ComboBox, setCustomStyleSheet,
     setThemeColor, themeColor, ProgressRing, ListWidget, CardWidget, TableWidget, ScrollArea, setFontFamilies,
-    CheckableMenu,
+    CheckableMenu, FluentIconBase, getIconColor,
 )
 from qfluentwidgets.components.widgets.table_view import TableItemDelegate
 from qfluentwidgets.components.widgets.tree_view import TreeItemDelegate
@@ -297,6 +297,13 @@ def icon(*names):
         if hasattr(FIF, name):
             return getattr(FIF, name)
     return FIF.FOLDER
+
+
+class PadlockIcon(FluentIconBase):
+    """A padlock for Lock: the UI library has none (its fingerprint looked like "unlock with Touch ID")."""
+
+    def path(self, theme=Theme.AUTO):
+        return str(RESOURCE_DIR / "icons" / f"lock_{getIconColor(theme)}.svg")
 
 
 # ---------------------------------------------------------------- database
@@ -3563,7 +3570,7 @@ class MainWindow(FluentWindow):
         self.vault = VaultView()
         self.addSubInterface(self.vault, FIF.HOME, "Vault")
         self.navigationInterface.addItem(
-            routeKey="lock", icon=icon("LOCK", "FINGERPRINT", "CLOSE"), text="Lock",
+            routeKey="lock", icon=PadlockIcon(), text="Lock",
             onClick=self.lock, selectable=False, position=NavigationItemPosition.BOTTOM)
         self.health = HealthView()
         self.addSubInterface(self.health, icon("HEART", "CERTIFICATE"), "Password health")
