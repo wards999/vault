@@ -375,9 +375,10 @@ class EntryIcons:
 
 
 PASSWORD_COLORS = {  # (light theme, dark theme); lowercase uses the normal text colour
-    "upper": ("#0f6cbd", "#6cb8f6"),
-    "digit": ("#c75300", "#ffb86c"),
-    "symbol": ("#8b3fd9", "#d4a6ff"),
+    # Three clearly different hues, strong enough to tell apart at a glance (drawn semi-bold too).
+    "upper": ("#0050c8", "#4aa3ff"),   # blue
+    "digit": ("#d13800", "#ff8a3d"),   # orange-red
+    "symbol": ("#008a2e", "#3ddc6e"),  # green
 }
 
 
@@ -442,6 +443,8 @@ class EntryDelegate(TableItemDelegate):
         painter.save()
         painter.setFont(self.mono)
         fm = painter.fontMetrics()
+        bold = QFont(self.mono)  # coloured characters are semi-bold too (same widths: monospaced)
+        bold.setWeight(QFont.DemiBold)
         r = option.rect
         x, right = r.x() + self.PADDING, r.right() - 6
         baseline = r.y() + (r.height() + fm.ascent() - fm.descent()) // 2
@@ -453,7 +456,9 @@ class EntryDelegate(TableItemDelegate):
                 painter.drawText(x, baseline, "…")
                 break
             kind = char_kind(ch) if self.colorize else "lower"
-            painter.setPen(QColor(PASSWORD_COLORS[kind][dark]) if kind in PASSWORD_COLORS else normal)
+            coloured = kind in PASSWORD_COLORS
+            painter.setPen(QColor(PASSWORD_COLORS[kind][dark]) if coloured else normal)
+            painter.setFont(bold if coloured else self.mono)
             painter.drawText(x, baseline, ch)
             x += w
         painter.restore()
@@ -1793,6 +1798,7 @@ class ColoredPasswordEdit(LineEdit):
                 if kind in PASSWORD_COLORS:
                     fmt = QTextCharFormat()
                     fmt.setForeground(QColor(PASSWORD_COLORS[kind][dark]))
+                    fmt.setFontWeight(QFont.DemiBold)
                     attributes.append(QInputMethodEvent.Attribute(
                         QInputMethodEvent.TextFormat, i - cursor, 1, fmt))
         QApplication.sendEvent(self, QInputMethodEvent("", attributes))
