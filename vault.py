@@ -1156,17 +1156,39 @@ class VaultView(QWidget):
         self.reveal.setToolTip(label)
 
     # Header widths (px of the right-hand panel) below which buttons drop their text.
-    REVEAL_TEXT_MIN, NEW_TEXT_MIN = 840, 660
+    HEADER_TITLE_ROOM, HEADER_SEARCH_ROOM = 160, 260  # px kept for the folder name and search box
 
     def eventFilter(self, obj, event):
         if obj is getattr(self, "right_box", None) and event.type() == QEvent.Resize:
             self._fit_header(event.size().width())
         return False
 
+    def _button_width(self, button, text):
+        """The width a button needs with this text, measured with whatever font this system uses."""
+        old = button.text()
+        button.setText(text)
+        width = button.sizeHint().width()
+        button.setText(old)
+        return width
+
+    def _header_widths(self):
+        """Panel widths below which 'Show passwords' and then 'New entry' drop their text."""
+        if getattr(self, "_header_limits", None) is None:
+            reveal_full = self._button_width(self.reveal, "Hide passwords")  # the longer of its two labels
+            reveal_icon = self._button_width(self.reveal, "")
+            new_full = self._button_width(self.new_btn, "New entry")
+            margins = self.right_box.layout().contentsMargins()
+            fixed = (self.HEADER_TITLE_ROOM + self.HEADER_SEARCH_ROOM + self.check_btn.sizeHint().width()
+                     + 4 * 8 + margins.left() + margins.right())  # 4 gaps of the header's 8 px spacing
+            self._header_limits = (fixed + reveal_full + new_full, fixed + reveal_icon + new_full)
+        return self._header_limits
+
     def _fit_header(self, width):
         """Keeps the header on one line without overlaps: as the panel narrows, the search box shrinks,
-        then "Show passwords" and "New entry" show only their icons (with tooltips)."""
-        reveal_icon_only, new_icon_only = width < self.REVEAL_TEXT_MIN, width < self.NEW_TEXT_MIN
+        then "Show passwords" and "New entry" show only their icons (with tooltips). The limits come
+        from the buttons' measured widths, so they suit each system's font."""
+        reveal_limit, new_limit = self._header_widths()
+        reveal_icon_only, new_icon_only = width < reveal_limit, width < new_limit
         if reveal_icon_only != self._reveal_icon_only:
             self._reveal_icon_only = reveal_icon_only
             self._on_reveal(self.reveal.isChecked())
