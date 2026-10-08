@@ -77,6 +77,16 @@ def ui_scale():
     return scale if scale in UI_SIZES.values() else 1.0
 
 
+def usable_ui_sizes():
+    """Sizes that render crisply on this screen. Shrinking below one screen pixel per design pixel
+    leaves too few pixels for clean text (smudgy at 80-90% on a screen at Windows' 100% scaling),
+    so smaller sizes are only offered on sharper screens (e.g. 150% scaling, Retina). The current
+    choice is always kept, so it can be changed back."""
+    screen = QApplication.primaryScreen()
+    native = screen.devicePixelRatio() / ui_scale() if screen else 1.0  # the screen's own scaling
+    return [s for s in UI_SIZES.values() if native * s >= 0.99 or s == ui_scale()]
+
+
 def idle_lock_minutes():
     """Minutes without use before Vault locks (0 = never). Earlier versions had an on/off switch
     ("lock_idle") for a fixed 5 minutes: honour it until a time is chosen."""
@@ -2644,7 +2654,7 @@ class SettingsView(ScrollArea):
         root.addWidget(self._row("Theme", "Colours for the whole app. System follows Windows' light or dark mode.",
                                  themes))
         sizes = ComboBox()
-        sizes.addItems(list(UI_SIZES))
+        sizes.addItems([name for name, scale in UI_SIZES.items() if scale in usable_ui_sizes()])
         sizes.setCurrentText(next(k for k, v in UI_SIZES.items() if v == ui_scale()))
         sizes.currentTextChanged.connect(lambda name: self._set_ui_size(name, on_restart))
         root.addWidget(self._row("Text size", "Makes text, buttons and icons smaller or larger. Applies when Vault "
