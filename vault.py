@@ -2693,10 +2693,24 @@ class SettingsView(ScrollArea):
         self.list_text = ComboBox()
         self.list_text.addItems([f"{size}%" for size in LIST_TEXT_SIZES])
         self.list_text.setCurrentText(f"{list_text_size()}%")
-        self.list_text.currentTextChanged.connect(lambda text: on_list_text(int(text.rstrip("%"))))
-        root.addWidget(self._row(
-            "List text size", "Text size of the entry list, folders and notes. Also Ctrl + mouse wheel, "
-            "Ctrl+= / Ctrl+− to change it, and Ctrl+0 for normal.", self.list_text))
+        self.list_text.currentTextChanged.connect(lambda text: (on_list_text(int(text.rstrip("%"))),
+                                                                self._preview_list_text(int(text.rstrip("%")))))
+        row = self._row(
+            "List text size", "Text size of the entry list, folders and notes. Quickest: Ctrl + mouse wheel over "
+            "the list (Ctrl+0 for normal).", self.list_text)
+        # A sample entry row at the chosen size, so the change shows here too.
+        preview = QHBoxLayout()
+        preview.setContentsMargins(0, 6, 0, 0)
+        preview.setSpacing(18)
+        preview.addWidget(caption("Preview:"))
+        self.preview_title = BodyLabel("GitHub")
+        self.preview_user, self.preview_pass = BodyLabel("alice@example.com"), BodyLabel("•" * 8)
+        for label in (self.preview_title, self.preview_user, self.preview_pass):
+            preview.addWidget(label)
+        preview.addStretch(1)
+        row.layout().itemAt(0).layout().addLayout(preview)
+        self._preview_list_text(list_text_size())
+        root.addWidget(row)
         clipboard = ComboBox()
         clipboard.addItems(list(CLIPBOARD_CHOICES))
         clipboard.setCurrentText(duration_text(clipboard_seconds()))
@@ -2766,6 +2780,16 @@ class SettingsView(ScrollArea):
         self.list_text.blockSignals(True)
         self.list_text.setCurrentText(f"{size}%")
         self.list_text.blockSignals(False)
+        self._preview_list_text(size)
+
+    def _preview_list_text(self, size):
+        """The sample entry row, in the same fonts the entry list uses at this size."""
+        k = size / 100
+        for label in (self.preview_title, self.preview_user):
+            label.setFont(getFont(round(13 * k)))
+        mono = QFont(MONO_FAMILY)
+        mono.setPixelSize(round(14 * k))
+        self.preview_pass.setFont(mono)
 
     def _set_theme(self, name):
         settings.setValue("theme", name)
