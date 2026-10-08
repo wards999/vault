@@ -87,8 +87,8 @@ def idle_lock_minutes():
     return minutes if minutes in IDLE_LOCK_CHOICES.values() else 5
 CLIPBOARD_CHOICES = {"Never": 0, "10 seconds": 10, "20 seconds": 20, "30 seconds": 30,
                      "1 minute": 60, "2 minutes": 120, "5 minutes": 300}
-ROW_DENSITIES = {"Compact": (30, 16), "Comfortable": (40, 22), "Spacious": (52, 26)}  # row height, icon size
-FOLDER_ROW_HEIGHTS = {"Compact": 26, "Comfortable": 33, "Spacious": 42}  # the folder tree's rows, per density
+ROW_DENSITIES = {"Compact": (24, 14), "Comfortable": (40, 22), "Spacious": (52, 26)}  # row height, icon size
+FOLDER_ROW_HEIGHTS = {"Compact": 22, "Comfortable": 33, "Spacious": 42}  # the folder tree's rows, per density
 AVATAR_COLORS = ["#0f6cbd", "#c239b3", "#038387", "#ca5010", "#8764b8", "#498205", "#d13438", "#4f6bed"]
 
 # name: (light/dark/auto base, accent colour, window background or None for the default Windows look)
@@ -1381,7 +1381,7 @@ class VaultView(QWidget):
         self.table.setIconSize(QSize(round(icon_size * k), round(icon_size * k)))
         # The folder tree follows the same density (and text size), but never clips its text.
         font_px = round(13 * k)
-        self._folder_row = max(round(FOLDER_ROW_HEIGHTS.get(name, 33) * k), font_px + 10)
+        self._folder_row = max(round(FOLDER_ROW_HEIGHTS.get(name, 33) * k), font_px + 8)
         self.folder_delegate.row_height = self._folder_row
         if hasattr(self, "model"):
             self._set_tree_icons()  # applies the row height to every folder
