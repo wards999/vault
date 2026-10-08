@@ -170,6 +170,43 @@ def make_dialogs_instant():
 make_dialogs_instant()
 
 
+def cache_svg_icons():
+    """The UI library re-reads, recolours (via XML) and re-parses every SVG icon on every paint, which
+    made each redraw (e.g. every step of a window resize) noticeably slower. The results only depend
+    on the inputs, so keep them: recoloured SVG text, and one parsed renderer per icon."""
+    from functools import lru_cache
+    from PySide6.QtCore import QRectF
+    from PySide6.QtSvg import QSvgRenderer
+    import qfluentwidgets.common as common
+    import qfluentwidgets.common.icon as icon_module
+    import qfluentwidgets.components.widgets.info_bar as info_bar
+    write_svg = icon_module.writeSvg
+
+    @lru_cache(maxsize=1024)
+    def written(path, indexes, attributes):
+        return write_svg(path, list(indexes) if indexes else None, **dict(attributes))
+
+    def writeSvg(iconPath, indexes=None, **attributes):
+        return written(iconPath, tuple(indexes) if indexes else None, tuple(sorted(attributes.items())))
+
+    renderers = {}
+
+    def drawSvgIcon(icon, painter, rect):
+        key = icon.data() if isinstance(icon, QByteArray) else icon
+        renderer = renderers.get(key)
+        if renderer is None:
+            if len(renderers) > 1024:
+                renderers.clear()
+            renderer = renderers[key] = QSvgRenderer(icon)
+        renderer.render(painter, QRectF(rect))
+
+    for module in (icon_module, common, info_bar):
+        module.writeSvg, module.drawSvgIcon = writeSvg, drawSvgIcon
+
+
+cache_svg_icons()
+
+
 def google_drive_folder():
     """Google Drive for Desktop's "My Drive" folder, if present (G: on Windows, CloudStorage on macOS)."""
     if sys.platform == "darwin":
