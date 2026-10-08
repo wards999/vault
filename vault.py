@@ -3310,8 +3310,12 @@ if __name__ == "__main__":
         # Own taskbar identity, so Windows shows Vault's icon rather than Python's (when run from source).
         import ctypes
         ctypes.windll.shell32.SetCurrentProcessExplicitAppUserModelID("Vault.PasswordManager")
-    if ui_scale() != 1.0:  # Settings → Text size (must be set before the QApplication exists)
+    # Settings → Text size (must be set before the QApplication exists). Always set or clear it: a copy
+    # started by "Restart now" inherits the previous copy's environment, including its old size.
+    if ui_scale() != 1.0:
         os.environ["QT_SCALE_FACTOR"] = str(ui_scale())
+    else:
+        os.environ.pop("QT_SCALE_FACTOR", None)
     app = QApplication(sys.argv)
     use_system_ui_font()
     # On macOS this is also the Dock icon, so use the version drawn on Apple's icon grid (with its
