@@ -1025,6 +1025,11 @@ class VaultView(QWidget):
         self.search_timer = QTimer(self, singleShot=True, interval=120, timeout=self.refresh)
         self.search.textChanged.connect(self.search_timer.start)
         head.addWidget(self.search, 1, Qt.AlignVCenter)  # shares spare room with the titles, up to 280 px
+        # Keyboard: Ctrl+F to search; Down or Enter moves on to the results (then Ctrl+C copies).
+        self.search.setToolTip(shortcut_text("Search (Ctrl+F)"))
+        local_shortcut("Ctrl+F", self, self.focus_search)
+        for keys in ("Down", "Return", "Enter"):
+            local_shortcut(keys, self.search, self.focus_results)
         self.reveal = TransparentTogglePushButton(FIF.VIEW, "Show passwords")
         self.reveal.toggled.connect(self._on_reveal)
         head.addWidget(self.reveal, 0, Qt.AlignVCenter)
@@ -1477,6 +1482,20 @@ class VaultView(QWidget):
             self.edit_entry()
 
     # ---- editing
+
+    def focus_search(self):
+        self.window().switchTo(self)
+        self.search.setFocus(Qt.ShortcutFocusReason)
+        self.search.selectAll()
+
+    def focus_results(self):
+        """From the search box to the first result, ready for Ctrl+C / Ctrl+B / Enter."""
+        if self.search_timer.isActive():  # still typing: filter now
+            self.search_timer.stop()
+            self.refresh()
+        if self.model.rowCount():
+            self.table.setFocus(Qt.ShortcutFocusReason)
+            self.table.selectRow(0)
 
     def _editable(self):
         return self.db is not None and self.db.writable
@@ -3859,6 +3878,7 @@ class MainWindow(FluentWindow):
             self.health.set_db(db)
             self.locked = False
             self.idle.timer.start()
+            QTimer.singleShot(0, self.vault.focus_search)  # ready to type what you're looking for
             name = Path(dialog.path).name
             self.setWindowTitle(f"Vault — {name}" if db.writable else f"Vault — {name} (read-only)")
             if not db.writable:
