@@ -911,12 +911,13 @@ class VaultView(QWidget):
         self.folder = None
 
         root = QHBoxLayout(self)
-        root.setContentsMargins(20, 20, 24, 24)
+        root.setContentsMargins(12, 20, 24, 24)
         root.setSpacing(0)
 
         # Folder tree
         tree_col = QVBoxLayout()
         tree_col.setSpacing(12)
+        tree_col.setContentsMargins(0, 9, 6, 9)  # was ~9 px on every side; top/bottom kept to line up with the right
         tree_head = QHBoxLayout()
         self.folders_title = SubtitleLabel("Folders")
         tree_head.addWidget(self.folders_title, 1)
@@ -1060,7 +1061,11 @@ class VaultView(QWidget):
         self._reveal_icon_only = False
         right_box.installEventFilter(self)  # its resizes drive _fit_header
         self.tree_splitter = GripSplitter(Qt.Horizontal, "tree_splitter", [tree_box, right_box], [240, 1000])
+        self.tree_splitter.setHandleWidth(10)  # still easy to grab, less of a gap between the panels
         root.addWidget(self.tree_splitter)
+        # The UI library pads each folder row by 20 px on the left; 16 still clears the expand arrows.
+        row_qss = "QTreeView::item { padding-left: 16px; }"
+        setCustomStyleSheet(self.tree, row_qss, row_qss)
         qconfig.themeChanged.connect(self._set_tree_icons)
 
         # Normal text sizes of the folder tree and notes (set by the UI library's styles), then the
