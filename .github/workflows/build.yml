@@ -1,13 +1,13 @@
-# Builds Vault for Windows and macOS on every push to main (and on demand from the Actions tab);
-# download the results from the run's "Artifacts" section.
+# Builds Vault for Windows and macOS when a release tag is pushed, or on demand from the Actions tab
+# (download the results from the run's "Artifacts" section). Plain pushes to main don't build: Mac
+# minutes count 10x against the free monthly allowance.
 #
-# Releases: pushing a tag like v1.2.0 (which must match VERSION in vault.py) also publishes a
-# GitHub Release with both zips attached:   git tag v1.2.0   then   git push origin v1.2.0
+# Releases: pushing a tag like v1.2.0 (which must match VERSION in vault.py) builds both apps and
+# publishes a GitHub Release with both zips attached:   git tag v1.2.0   then   git push origin v1.2.0
 name: Build
 
 on:
   push:
-    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
