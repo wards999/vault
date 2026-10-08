@@ -299,6 +299,23 @@ def icon(*names):
     return FIF.FOLDER
 
 
+def secret_mime_data(text):
+    """Clipboard data for a password etc., marked so it stays out of clipboard history: Windows'
+    Clipboard history (Win+V) and cloud clipboard sync, macOS and Linux clipboard managers (as KeePassXC does)."""
+    data = QMimeData()
+    data.setText(text)
+    if sys.platform == "win32":
+        zero = bytes(4)  # DWORD 0
+        for name in ("ExcludeClipboardContentFromMonitorProcessing", "CanIncludeInClipboardHistory",
+                     "CanUploadToCloudClipboard"):
+            data.setData(f'application/x-qt-windows-mime;value="{name}"', zero)
+    elif sys.platform == "darwin":
+        data.setData("application/x-nspasteboard-concealed-type", text.encode())
+    else:
+        data.setData("x-kde-passwordManagerHint", b"secret")
+    return data
+
+
 class PadlockIcon(FluentIconBase):
     """A padlock for Lock: the UI library has none (its fingerprint looked like "unlock with Touch ID")."""
 
@@ -3769,8 +3786,7 @@ class MainWindow(FluentWindow):
     def copy_secret(self, text, label, notify=True):
         if not text:
             return
-        cb = QApplication.clipboard()
-        cb.setText(text)
+        QApplication.clipboard().setMimeData(secret_mime_data(text))
         self._copied = text
         seconds = clipboard_seconds()
         if seconds:
