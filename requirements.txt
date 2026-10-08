@@ -3,3 +3,4 @@ pykeepass
 zxcvbn
 certifi
 pyobjc-framework-LocalAuthentication; sys_platform == "darwin"
+pyobjc-framework-Cocoa; sys_platform == "darwin"

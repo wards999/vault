@@ -43,8 +43,11 @@ Then choose your database file, type your master password and click **Unlock**.
 - **Changes from other computers:** if the file was changed elsewhere (another PC, KeePass or
   KeePassXC), Vault merges both sets of changes and asks only when the same entry was changed in
   both places. Press **F5** to check for changes now.
-- **Lock:** Vault locks after 5 minutes without use (this can be turned off), or straight away with
-  **Lock**. Locking saves any pending changes first and clears copied passwords from the clipboard.
+- **Lock:** Vault locks after a time without use that you choose in Settings (never, or 1 minute to
+  1 hour; 5 minutes by default), the moment you lock the computer (Windows+L / Control-Command-Q) or
+  it goes to sleep, or straight away with **Lock**. Locking saves any pending changes first and clears
+  copied passwords from the clipboard. If Vault is minimised it stays minimised, and asks for the
+  password when you open it.
 - **Quick Unlock:** after unlocking with your master password, unlock again with **Windows Hello**
   (fingerprint, face or PIN) or **Touch ID** until you quit Vault. As in KeePassXC, the master
   password is never saved: it's kept only in memory, encrypted. You can turn this off in Settings.

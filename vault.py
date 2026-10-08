@@ -47,6 +47,7 @@ import generator
 import health
 import quickunlock
 import store
+import systemlock
 import totp
 from store import Database, Op
 
@@ -56,7 +57,21 @@ if sys.platform == "win32":  # for smooth resizing (MainWindow.nativeEvent)
     from qframelesswindow.windows.c_structures import LPNCCALCSIZE_PARAMS
 
 VERSION = "1.0.7"  # releases are tagged v<VERSION> (see .github/workflows/build.yml)
-IDLE_LOCK_MINUTES = 5
+IDLE_LOCK_CHOICES = {"Never": 0, "After 1 minute": 1, "After 2 minutes": 2, "After 5 minutes": 5,
+                     "After 10 minutes": 10, "After 15 minutes": 15, "After 30 minutes": 30, "After 1 hour": 60}
+
+
+def idle_lock_minutes():
+    """Minutes without use before Vault locks (0 = never). Earlier versions had an on/off switch
+    ("lock_idle") for a fixed 5 minutes: honour it until a time is chosen."""
+    saved = settings.value("lock_idle_minutes")
+    if saved is None:
+        return 5 if setting("lock_idle", True) else 0
+    try:
+        minutes = int(saved)
+    except (TypeError, ValueError):
+        return 5
+    return minutes if minutes in IDLE_LOCK_CHOICES.values() else 5
 CLIPBOARD_CHOICES = {"Never": 0, "10 seconds": 10, "20 seconds": 20, "30 seconds": 30,
                      "1 minute": 60, "2 minutes": 120, "5 minutes": 300}
 ROW_DENSITIES = {"Compact": (30, 16), "Comfortable": (40, 22), "Spacious": (52, 26)}  # row height, icon size
@@ -2576,7 +2591,8 @@ class HealthView(QWidget):
 
 
 class SettingsView(ScrollArea):
-    def __init__(self, on_colorize, on_density, on_fetch_missing, on_refresh_icons, on_quick_unlock, parent=None):
+    def __init__(self, on_colorize, on_density, on_fetch_missing, on_refresh_icons, on_quick_unlock, on_idle_minutes,
+                 parent=None):
         super().__init__(parent)
         self.setObjectName("view-settings")
         self.setWidgetResizable(True)
@@ -2604,9 +2620,19 @@ class SettingsView(ScrollArea):
         root.addWidget(self._row(
             "Clear clipboard after", "How long copied usernames, passwords and 2FA codes stay on the clipboard "
             "before Vault wipes them.", clipboard))
+        idle = ComboBox()
+        idle.addItems(list(IDLE_LOCK_CHOICES))
+        idle.setCurrentText(next(k for k, v in IDLE_LOCK_CHOICES.items() if v == idle_lock_minutes()))
+        idle.currentTextChanged.connect(lambda name: (settings.setValue("lock_idle_minutes", IDLE_LOCK_CHOICES[name]),
+                                                      on_idle_minutes(IDLE_LOCK_CHOICES[name])))
         root.addWidget(self._row(
-            "Lock when idle", f"Lock the database after {IDLE_LOCK_MINUTES} minutes without keyboard or mouse use.",
-            self._bool_switch("lock_idle")))
+            "Lock when not used", "Lock the database after this long without keyboard or mouse use in Vault "
+            "(also while it's minimised).", idle))
+        lock_keys = "Control-Command-Q" if sys.platform == "darwin" else "Windows+L"
+        root.addWidget(self._row(
+            "Lock with the computer", f"Also lock the moment you lock the computer ({lock_keys}, or the screen "
+            "saver asking for your password), switch user, or the computer goes to sleep.",
+            self._bool_switch("lock_with_system")))
         verifier = quickunlock.get_verifier()
         if verifier:
             root.addWidget(self._row(
@@ -2876,13 +2902,21 @@ class IdleWatcher(QObject):
         super().__init__()
         self.timer = QTimer(self)
         self.timer.setSingleShot(True)
-        self.timer.setInterval(minutes * 60_000)
         self.timer.timeout.connect(on_idle)
         QApplication.instance().installEventFilter(self)
-        self.timer.start()
+        self.set_minutes(minutes)
+
+    def set_minutes(self, minutes):
+        """0 = never."""
+        self.minutes = minutes
+        if minutes > 0:
+            self.timer.setInterval(minutes * 60_000)
+            self.timer.start()
+        else:
+            self.timer.stop()
 
     def eventFilter(self, obj, event):
-        if event.type() in self.INPUT_EVENTS:
+        if self.minutes > 0 and event.type() in self.INPUT_EVENTS:
             self.timer.start()
         return False
 
@@ -2943,10 +2977,13 @@ class MainWindow(FluentWindow):
         self.addSubInterface(SettingsView(on_colorize=self.vault.set_colorize, on_density=self.vault.set_density,
                                           on_fetch_missing=lambda: self.fetch_icons(missing_only=True),
                                           on_refresh_icons=lambda: self.fetch_icons(missing_only=False),
-                                          on_quick_unlock=self._set_quick_unlock),
+                                          on_quick_unlock=self._set_quick_unlock,
+                                          on_idle_minutes=lambda minutes: self.idle.set_minutes(minutes)),
                              FIF.SETTING, "Settings", NavigationItemPosition.BOTTOM)
         self.icons = IconFetcher(self)
-        self.idle = IdleWatcher(IDLE_LOCK_MINUTES, self._on_idle)
+        self.idle = IdleWatcher(idle_lock_minutes(), self._on_idle)
+        # Lock with the computer (locking, sleep, switching user); see systemlock.py.
+        self._system_lock_watch = systemlock.watch(int(self.winId()), lambda: QTimer.singleShot(0, self._on_system_lock))
         self.saver = SaveController(self)
         self.saver.status.connect(self.vault.set_save_status)
         self.saver.reloaded.connect(self._on_reloaded)
@@ -3019,6 +3056,8 @@ class MainWindow(FluentWindow):
             self._set_live_resize(True)
         elif msg.message == 0x0232 and live:  # WM_EXITSIZEMOVE: drag finished
             self._set_live_resize(False)
+        elif systemlock.is_lock_message(msg.message, msg.wParam) and live is not None:
+            QTimer.singleShot(0, self._on_system_lock)  # Windows locked or going to sleep
         if handled:
             if msg.message == 0x0083 and msg.wParam:  # WM_NCCALCSIZE, while resizing/moving
                 params = cast(msg.lParam, LPNCCALCSIZE_PARAMS).contents
@@ -3112,7 +3151,12 @@ class MainWindow(FluentWindow):
             self._copied = None
 
     def _on_idle(self):
-        if not self.locked and setting("lock_idle", True):
+        if not self.locked and idle_lock_minutes() > 0:
+            self.lock()
+
+    def _on_system_lock(self):
+        """The computer was locked, put to sleep or switched to another user."""
+        if not self.locked and setting("lock_with_system", True):
             self.lock()
 
     def lock(self):

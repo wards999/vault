@@ -11,6 +11,8 @@ PYTHON=${PYTHON:-$( [ -x .venv/bin/python ] && echo .venv/bin/python || echo pyt
 "$PYTHON" -m pip install --quiet -r requirements.txt
 # Touch ID (Quick Unlock) needs Apple's LocalAuthentication framework via pyobjc: fail early if it's missing.
 "$PYTHON" -c "import quickunlock; quickunlock.TouchID(); print('Touch ID support: OK')"
+# Locking with the Mac (screen lock / sleep) needs AppKit and Foundation via pyobjc.
+"$PYTHON" -c "import systemlock; w = systemlock.MacWatcher(lambda: None); print('Lock-with-Mac support: OK')"
 
 # Pillow is only used by PyInstaller here (to turn the PNG into a .icns); keep it out of the app.
 "$PYTHON" -m PyInstaller vault.py \
@@ -23,6 +25,8 @@ PYTHON=${PYTHON:-$( [ -x .venv/bin/python ] && echo .venv/bin/python || echo pyt
     --add-data "$PWD/wordlists:wordlists" \
     --collect-data zxcvbn \
     --hidden-import LocalAuthentication \
+    --hidden-import AppKit \
+    --hidden-import Foundation \
     --exclude-module PIL \
     --exclude-module numpy \
     --exclude-module scipy \
