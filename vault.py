@@ -87,6 +87,7 @@ def idle_lock_minutes():
 CLIPBOARD_CHOICES = {"Never": 0, "10 seconds": 10, "20 seconds": 20, "30 seconds": 30,
                      "1 minute": 60, "2 minutes": 120, "5 minutes": 300}
 ROW_DENSITIES = {"Compact": (30, 16), "Comfortable": (40, 22), "Spacious": (52, 26)}  # row height, icon size
+FOLDER_ROW_HEIGHTS = {"Compact": 26, "Comfortable": 33, "Spacious": 42}  # the folder tree's rows, per density
 AVATAR_COLORS = ["#0f6cbd", "#c239b3", "#038387", "#ca5010", "#8764b8", "#498205", "#d13438", "#4f6bed"]
 
 # name: (light/dark/auto base, accent colour, window background or None for the default Windows look)
@@ -1151,6 +1152,8 @@ class VaultView(QWidget):
             item = it.value()
             if getattr(self, "_tree_font", None) is not None:
                 item.setData(0, Qt.FontRole, self._tree_font)  # Settings → List text size
+            if getattr(self, "_folder_row", None):
+                item.setSizeHint(0, QSize(0, self._folder_row))  # Settings → Row density
             own = None  # the folder's own icon from the database (as KeePass shows it), if it has one
             if item.parent() and not item.data(0, Qt.UserRole + 1) and self.model.icons and item.data(0, Qt.UserRole + 2):
                 own = self.model.icons.folder(item.data(0, Qt.UserRole + 2))
@@ -1163,7 +1166,7 @@ class VaultView(QWidget):
             else:
                 item.setIcon(0, FIF.FOLDER.icon())
             it += 1
-
+        self.tree.doItemsLayout()  # the tree caches row heights: recalculate them for the new size
     @staticmethod
     def _folder_key(db):
         # One remembered folder per database file (keys can't contain the path itself).
@@ -1298,6 +1301,11 @@ class VaultView(QWidget):
         k = getattr(self, "_list_text", 100) / 100  # rows and icons grow with the list text size
         self.table.verticalHeader().setDefaultSectionSize(round(row_height * k))
         self.table.setIconSize(QSize(round(icon_size * k), round(icon_size * k)))
+        # The folder tree follows the same density (and text size), but never clips its text.
+        font_px = round(13 * k)
+        self._folder_row = max(round(FOLDER_ROW_HEIGHTS.get(name, 33) * k), font_px + 10)
+        if hasattr(self, "model"):
+            self._set_tree_icons()  # applies the row height to every folder
 
     def set_colorize(self, on):
         self.delegate.colorize = on
