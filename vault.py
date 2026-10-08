@@ -3116,8 +3116,23 @@ class HealthView(QWidget):
             self.empty.setText("")
 
     def _open(self, index):
-        if 0 <= index.row() < len(self.rows):
-            self.window().show_entry(self.rows[index.row()]["entry"]["uuid"], edit=True)
+        """Edits the entry right here, so the list of problems stays on screen."""
+        if not 0 <= index.row() < len(self.rows) or self.db is None:
+            return
+        uuid = self.rows[index.row()]["entry"]["uuid"]
+        if not self.db.writable:
+            self.window().show_entry(uuid)
+            return
+        e = next((x for x in self.db.entries if x["uuid"] == uuid), None)
+        if e is None:
+            return
+        editor = EntryEditor(self.window(), self.db, entry=e)
+        if editor.exec() and editor.op:
+            self.window().saver.submit(editor.op, f"Edit of “{e['title']}”")
+            if "url" in editor.op.fields:
+                self.window().vault._auto_icon(editor.op)
+            if self.dirty:
+                self.refresh()
 
 
 class SettingsView(ScrollArea):
