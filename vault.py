@@ -4252,11 +4252,14 @@ class MainWindow(FluentWindow):
             self.privacy_cover.hide()
 
     def _taskbar_padlock(self, on):
-        """Windows: while locked, the taskbar thumbnail and its hover preview show the padlock screen.
-        Otherwise, after locking while minimised, Windows' last picture of the window (taken before it
-        locked) would still show the passwords there."""
+        """While locked, the taskbar thumbnail and its hover preview (Windows) or the minimised window in
+        the Dock (macOS) show the padlock screen. Otherwise, after locking while minimised, the system's
+        last picture of the window (taken before it locked) would still show the passwords there."""
         if sys.platform == "win32":
             taskbarpreview.set_iconic(int(self.winId()), on)
+        elif sys.platform == "darwin":
+            import macdock
+            macdock.set_padlock(int(self.winId()), PrivacyCover.image(self.size(), 2.0) if on else None)
 
     def _send_taskbar_picture(self, msg):
         hwnd = int(self.winId())
