@@ -4189,8 +4189,8 @@ class MainWindow(FluentWindow):
             button.hide()
         bar.iconLabel.hide()  # Mac windows don't show an icon in the title bar
         # The traffic lights take the top-left 74 px (see systemTitleBarRect; the title bar starts
-        # 46 px in) and sit in the top 28 px: start the title after them and centre it on their row.
-        bar.hBoxLayout.setContentsMargins(46, 0, 0, 20)
+        # 46 px in) and are centred 20 px down: start the title after them and centre it on their row.
+        bar.hBoxLayout.setContentsMargins(46, 0, 0, 8)
         # The sidebar's Back arrow sat where the traffic lights go; Vault doesn't need page history.
         self.navigationInterface.setReturnButtonVisible(False)
         self.navigationInterface.panel.vBoxLayout.setContentsMargins(0, 34, 0, 5)
@@ -4198,8 +4198,9 @@ class MainWindow(FluentWindow):
     def systemTitleBarRect(self, size):
         """macOS: where the traffic lights go. FluentWindow puts them at the top right, like Windows'
         buttons; Mac apps with a tall title bar (Finder, Safari) have them at the top left with the close
-        button 20 px in, level with the title. The library centres the minimise button in this rect."""
-        return QRect(0, 0, 94, size.height())
+        button 20 px in, level with the title. The library centres the minimise button in this rect;
+        6 px down from the top edge, so they don't crowd it (centred 20 px down in the 48 px title bar)."""
+        return QRect(0, 0 if self.isFullScreen() else 6, 94, size.height())
 
     # ---- hiding contents when minimised
 
