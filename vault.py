@@ -23,7 +23,7 @@ from PySide6.QtCore import (
     QTimer, QUrl, Signal, QMimeData, QByteArray, QPoint,
 )
 from PySide6.QtGui import (
-    QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QInputMethodEvent, QKeySequence,
+    QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QImage, QInputMethodEvent, QKeySequence,
     QPainter, QPalette, QPen, QPixmap, QShortcut, QTextCharFormat,
 )
 from PySide6.QtWidgets import (
@@ -54,10 +54,11 @@ import systemlock
 import totp
 from store import Database, Op
 
-if sys.platform == "win32":  # for smooth resizing (MainWindow.nativeEvent)
+if sys.platform == "win32":  # for smooth resizing and the taskbar pictures (MainWindow.nativeEvent)
     from ctypes import cast
     from ctypes.wintypes import MSG, RECT
     from qframelesswindow.windows.c_structures import LPNCCALCSIZE_PARAMS
+    import taskbarpreview
 
 VERSION = "1.0.20"  # releases are tagged v<VERSION> (see .github/workflows/build.yml)
 IDLE_LOCK_CHOICES = {"Never": 0, "After 1 minute": 1, "After 2 minutes": 2, "After 5 minutes": 5,
@@ -4100,16 +4101,30 @@ class PrivacyCover(QWidget):
 
     def paintEvent(self, _event):
         p = QPainter(self)
+        self.draw(p, self.rect())
+
+    @staticmethod
+    def draw(p, rect):
         p.setRenderHint(QPainter.Antialiasing)
         mode, _, background = THEMES.get(theme_name(), THEMES["System"])
-        p.fillRect(self.rect(), QColor(background or DEFAULT_BACKGROUNDS[1 if isDarkTheme() else 0]))
+        p.fillRect(rect, QColor(background or DEFAULT_BACKGROUNDS[1 if isDarkTheme() else 0]))
         size = 96
-        c = self.rect().center()
+        c = rect.center()
         QIcon(str(RESOURCE_DIR / "icons" / "vault.png")).paint(p, QRect(c.x() - size // 2, c.y() - size, size, size))
         p.setPen(QColor("#ffffff" if isDarkTheme() else "#1f1f1f"))
         font = getFont(28, QFont.DemiBold)
         p.setFont(font)
-        p.drawText(QRect(0, c.y() + 12, self.width(), 44), Qt.AlignHCenter | Qt.AlignTop, "Vault")
+        p.drawText(QRect(0, c.y() + 12, rect.width(), 44), Qt.AlignHCenter | Qt.AlignTop, "Vault")
+
+    @classmethod
+    def image(cls, size, ratio=1.0):
+        """The cover as a picture, `size` in window units, `ratio` device pixels per unit."""
+        img = QImage(round(size.width() * ratio), round(size.height() * ratio), QImage.Format_ARGB32_Premultiplied)
+        img.setDevicePixelRatio(ratio)
+        p = QPainter(img)
+        cls.draw(p, QRect(0, 0, size.width(), size.height()))
+        p.end()
+        return img
 
 
 class MainWindow(FluentWindow):
@@ -4150,6 +4165,7 @@ class MainWindow(FluentWindow):
         self.idle = IdleWatcher(idle_lock_minutes(), self._on_idle)
         # Lock with the computer (locking, sleep, switching user); see systemlock.py.
         self._system_lock_watch = systemlock.watch(int(self.winId()), lambda: QTimer.singleShot(0, self._on_system_lock))
+        self._taskbar_padlock(True)  # starts locked
         self.saver = SaveController(self)
         self.saver.status.connect(self.vault.set_save_status)
         self.saver.reloaded.connect(self._on_reloaded)
@@ -4223,7 +4239,10 @@ class MainWindow(FluentWindow):
                 self.privacy_cover.show_over()  # best effort when minimised by the system (e.g. Cmd+M)
                 QTimer.singleShot(1500, lambda: self.isMinimized() and trim_memory())
             elif self.privacy_cover.isVisible():
-                QTimer.singleShot(self.COVER_DELAY_MS, self._uncover)
+                if getattr(self, "_unlock_when_restored", False):
+                    QTimer.singleShot(self.COVER_DELAY_MS, self._uncover)  # until the unlock screen is up
+                else:
+                    self.privacy_cover.hide()  # it's only needed while minimised: no flash of it on restore
             if not self.isMinimized() and getattr(self, "_unlock_when_restored", False):
                 self._unlock_when_restored = False
                 QTimer.singleShot(self.COVER_DELAY_MS, self._show_unlock)
@@ -4231,6 +4250,22 @@ class MainWindow(FluentWindow):
     def _uncover(self):
         if not self.isMinimized():
             self.privacy_cover.hide()
+
+    def _taskbar_padlock(self, on):
+        """Windows: while locked, the taskbar thumbnail and its hover preview show the padlock screen.
+        Otherwise, after locking while minimised, Windows' last picture of the window (taken before it
+        locked) would still show the passwords there."""
+        if sys.platform == "win32":
+            taskbarpreview.set_iconic(int(self.winId()), on)
+
+    def _send_taskbar_picture(self, msg):
+        hwnd = int(self.winId())
+        if msg.message == taskbarpreview.WM_DWMSENDICONICTHUMBNAIL:
+            max_w, max_h = taskbarpreview.thumbnail_limit(msg.lParam)
+            image = PrivacyCover.image(self.size()).scaled(max_w, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+            taskbarpreview.set_thumbnail(hwnd, image)
+        else:  # the full-size preview while hovering over the thumbnail
+            taskbarpreview.set_live_preview(hwnd, PrivacyCover.image(self.size(), self.devicePixelRatioF()))
 
     def nativeEvent(self, eventType, message):
         """Windows: smooth resizing from the left or top edge. By default Windows first copies the old
@@ -4250,6 +4285,10 @@ class MainWindow(FluentWindow):
             self._set_live_resize(False)
         elif systemlock.is_lock_message(msg.message, msg.wParam) and live is not None:
             QTimer.singleShot(0, self._on_system_lock)  # Windows locked or going to sleep
+        elif msg.message in (taskbarpreview.WM_DWMSENDICONICTHUMBNAIL,
+                             taskbarpreview.WM_DWMSENDICONICLIVEPREVIEWBITMAP) and live is not None:
+            self._send_taskbar_picture(msg)
+            return True, 0
         if handled:
             if msg.message == 0x0083 and msg.wParam:  # WM_NCCALCSIZE, while resizing/moving
                 params = cast(msg.lParam, LPNCCALCSIZE_PARAMS).contents
@@ -4274,6 +4313,8 @@ class MainWindow(FluentWindow):
         super().resizeEvent(event)
         if hasattr(self, "privacy_cover") and self.privacy_cover.isVisible():
             self.privacy_cover.setGeometry(self.rect())
+        if sys.platform == "win32" and getattr(self, "locked", False):
+            taskbarpreview.invalidate(int(self.winId()))  # the thumbnail's shape follows the window's
 
     def save_geometry(self):
         if not self.isFullScreen():  # next time, open as it was before going full screen
@@ -4377,6 +4418,7 @@ class MainWindow(FluentWindow):
 
     def _lock_now(self):
         self.locked = True
+        self._taskbar_padlock(True)
         self.idle.arm(False)
         self.saver.detach()
         self.vault.clear()
@@ -4447,6 +4489,7 @@ class MainWindow(FluentWindow):
             self.saver.attach(db)
             self.health.set_db(db)
             self.locked = False
+            self._taskbar_padlock(False)
             self.idle.arm(True)
             QTimer.singleShot(0, self.vault.focus_search)  # ready to type what you're looking for
             name = Path(dialog.path).name

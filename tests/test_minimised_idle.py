@@ -51,7 +51,10 @@ other.add_entry(other.root_group, "From phone", "p", "phone-pw")
 other.save()
 w.vault.refresh(select_uuid=gh["uuid"])  # e.g. a reload while minimised must not restart the countdown
 ok("still minimised: countdown not restarted by a refresh", not notes.totp_timer.isActive())
-w.showNormal(); QTest.qWaitForWindowExposed(w)
+ok("minimised: the privacy cover is over the window", w.privacy_cover.isVisible())
+w.showNormal(); QApplication.processEvents()
+ok("restored: the cover is gone at once (no flash of it)", not w.privacy_cover.isVisible())
+QTest.qWaitForWindowExposed(w)
 ok("restored: changes made elsewhere are picked up at once",
    wait(lambda: any(e["title"] == "From phone" for e in w.saver.db.entries), 10))
 ok("restored: file checks running again", w.saver.poll_timer.isActive())
