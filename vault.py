@@ -302,6 +302,13 @@ def icon(*names):
     return FIF.FOLDER
 
 
+def file_size(size):
+    for unit in ("bytes", "KB", "MB"):
+        if size < 1024 or unit == "MB":
+            return f"{size} {unit}" if unit == "bytes" else f"{size:.0f} {unit}" if size >= 10 else f"{size:.1f} {unit}"
+        size /= 1024
+
+
 def secret_mime_data(text):
     """Clipboard data for a password etc., marked so it stays out of clipboard history: Windows'
     Clipboard history (Win+V) and cloud clipboard sync, macOS and Linux clipboard managers (as KeePassXC does)."""
@@ -319,11 +326,15 @@ def secret_mime_data(text):
     return data
 
 
-class PadlockIcon(FluentIconBase):
-    """A padlock for Lock: the UI library has none (its fingerprint looked like "unlock with Touch ID")."""
+class AppIcon(FluentIconBase):
+    """Vault's own icons (icons/<name>_black.svg and _white.svg) for ones the UI library lacks: "lock" (a
+    padlock; its fingerprint looked like "unlock with Touch ID") and "attach" (a paperclip)."""
+
+    def __init__(self, name):
+        self.name = name
 
     def path(self, theme=Theme.AUTO):
-        return str(RESOURCE_DIR / "icons" / f"lock_{getIconColor(theme)}.svg")
+        return str(RESOURCE_DIR / "icons" / f"{self.name}_{getIconColor(theme)}.svg")
 
 
 # ---------------------------------------------------------------- database
@@ -467,8 +478,16 @@ class EntryDelegate(TableItemDelegate):
         if self._is_revealed_password(index):
             option.text = ""  # drawn by paint() instead
 
+    ATTACH = AppIcon("attach")
+
     def paint(self, painter, option, index):
         super().paint(painter, option, index)
+        if index.column() == 0 and self.model.entries[index.row()]["attachments"]:  # paperclip: has attachments
+            r, s = option.rect, 14
+            painter.save()
+            painter.setOpacity(0.6)
+            self.ATTACH.render(painter, QRect(r.right() - s - 8, r.center().y() - s // 2 + 1, s, s))
+            painter.restore()
         if not self._is_revealed_password(index):
             return
         password = self.model.data(index, Qt.UserRole)["password"]
@@ -916,14 +935,92 @@ class NotesPanel(SimpleCardWidget):
         self.totp_timer = QTimer(self, interval=1000, timeout=self._tick)
         self.entry = None
 
+        # Extra fields (e.g. "PIN") and attached files, shown only for entries that have them
+        self.extra_box = QWidget()
+        self.extra = QGridLayout(self.extra_box)
+        self.extra.setContentsMargins(0, 0, 0, 0)
+        self.extra.setHorizontalSpacing(10)
+        self.extra.setVerticalSpacing(0)
+        self.extra.setColumnStretch(4, 1)
+        root.addWidget(self.extra_box)
+
         self.notes = PlainTextEdit()
         self.notes.setReadOnly(True)
         self.notes.setPlaceholderText("No notes")
         root.addWidget(self.notes, 1)
         self.set_entry(None)
 
+    def _show_extra(self, e):
+        while self.extra.count():
+            self.extra.takeAt(0).widget().deleteLater()
+        fields, files = (e["fields"], e["attachments"]) if e else ([], [])
+        self.extra_box.setVisible(bool(fields or files))
+        for row, (name, value, hidden) in enumerate(fields):
+            self.extra.addWidget(caption(name), row, 0)
+            shown = value.splitlines()[0] + " …" if "\n" in value else value
+            label = BodyLabel("•" * 8 if hidden and value else shown)
+            label.setMaximumWidth(420)
+            if not hidden:
+                label.setToolTip(value)
+                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.extra.addWidget(label, row, 1)
+            if hidden and value:
+                reveal = TransparentToggleToolButton(FIF.VIEW)
+                reveal.setToolTip("Show")
+                reveal.toggled.connect(lambda on, lbl=label, v=shown: lbl.setText(v if on else "•" * 8))
+                self.extra.addWidget(reveal, row, 2)
+            if value:
+                copy = TransparentToolButton(FIF.COPY)
+                copy.setToolTip(f"Copy {name}")
+                copy.clicked.connect(lambda _=False, n=name, v=value: self.window().copy_secret(v, n))
+                self.extra.addWidget(copy, row, 3)
+        if files:
+            row = len(fields)
+            self.extra.addWidget(caption("Attachments"), row, 0)
+            box = QWidget()
+            line = QHBoxLayout(box)
+            line.setContentsMargins(0, 0, 0, 0)
+            line.setSpacing(4)
+            for name, size in files:
+                button = TransparentPushButton(AppIcon("attach"), f"{name}  ({file_size(size)})")
+                button.setToolTip(f"Save {name}…")
+                button.clicked.connect(lambda _=False, n=name: self.save_attachment(n))
+                line.addWidget(button)
+            line.addStretch(1)
+            self.extra.addWidget(box, row, 1, 1, 4)
+        for kind in (TransparentToolButton, TransparentToggleToolButton):
+            for button in self.extra_box.findChildren(kind):
+                button.setFixedSize(28, 28)
+                button.setIconSize(QSize(14, 14))
+        for button in self.extra_box.findChildren(TransparentPushButton):
+            button.setFixedHeight(28)
+        # Room for these rows as well as a little of the notes (the splitter gives way)
+        rows = len(fields) + bool(files)
+        self.extra_box.setFixedHeight(rows * 28 + max(0, rows - 1) * self.extra.verticalSpacing())
+        extra = self.extra_box.height() + self.layout().spacing() if rows else 0
+        self.setMinimumHeight(130 + extra)
+
+    def save_attachment(self, name):
+        """Saves an attached file where the user chooses (it's only ever written decrypted there)."""
+        db = self.window().vault.db
+        data = db.attachment(self.entry["uuid"], name) if db and self.entry else None
+        if data is None:
+            return
+        path, _ = QFileDialog.getSaveFileName(self, "Save attachment", str(Path.home() / "Downloads" / name))
+        if not path:
+            return
+        try:
+            Path(path).write_bytes(data)
+        except OSError as exc:
+            InfoBar.error("Couldn't save", str(exc), orient=Qt.Horizontal, isClosable=True,
+                          position=InfoBarPosition.TOP_RIGHT, duration=5000, parent=self.window())
+            return
+        InfoBar.success("Saved", Path(path).name, orient=Qt.Horizontal, isClosable=True,
+                        position=InfoBarPosition.TOP_RIGHT, duration=2000, parent=self.window())
+
     def set_entry(self, e):
         self.entry = e
+        self._show_extra(e)
         self.totp_box.setVisible(bool(e and e["totp"]))
         if e and e["totp"]:
             self._tick()
@@ -3724,7 +3821,7 @@ class MainWindow(FluentWindow):
         self.vault = VaultView()
         self.addSubInterface(self.vault, FIF.HOME, "Vault")
         self.navigationInterface.addItem(
-            routeKey="lock", icon=PadlockIcon(), text="Lock",
+            routeKey="lock", icon=AppIcon("lock"), text="Lock",
             onClick=self.lock, selectable=False, position=NavigationItemPosition.BOTTOM)
         self.health = HealthView()
         self.addSubInterface(self.health, icon("HEART", "CERTIFICATE"), "Password health")

@@ -165,6 +165,17 @@ class Database:
                                  modified=when.astimezone() if when else None))
         return versions
 
+    def attachment(self, entry_uuid, name):
+        """The bytes of an entry's attached file, or None."""
+        e = _find_entry(self.kp, entry_uuid)
+        for b in e._element.findall("Binary") if e is not None else []:
+            if (b.findtext("Key") or "attachment") == name:
+                try:
+                    return self.kp.binaries[int(b.find("Value").get("Ref"))]
+                except (AttributeError, TypeError, ValueError, IndexError):
+                    return None
+        return None
+
     @property
     def recycle_bin_enabled(self):
         return self.kp.tree.getroot().findtext("Meta/RecycleBinEnabled") != "False"
@@ -237,8 +248,34 @@ def entry_snapshot(e, ids, names, in_bin):
         folder_ids=ids, path=names, in_bin=in_bin, folder_id=ids[-1] if ids else None,
         icon=(icon_id, el.findtext("CustomIconUUID") or None), folder=" › ".join(names) or "Root",
     )
-    entry["search"] = "\n".join(entry[k] for k in ("title", "username", "url", "notes")).lower()
+    # Extra fields (e.g. "PIN", "Security answer") and attached files, as KeePass/KeePassXC make them
+    extra = []
+    for s in el.findall("String"):
+        key = s.findtext("Key") or ""
+        if key in _HIDDEN_KEYS or key.startswith(_HIDDEN_PREFIXES):
+            continue
+        value = s.find("Value")
+        extra.append((key, value.text or "" if value is not None else "",
+                      value is not None and value.get("Protected") == "True"))
+    entry["fields"] = extra  # [(name, value, hidden)]
+    files = []
+    for b in el.findall("Binary"):
+        ref = b.find("Value")
+        try:
+            size = len(kp.binaries[int(ref.get("Ref"))])
+        except (AttributeError, TypeError, ValueError, IndexError):
+            size = 0
+        files.append((b.findtext("Key") or "attachment", size))
+    entry["attachments"] = files  # [(file name, size in bytes)]
+    entry["search"] = "\n".join([entry[k] for k in ("title", "username", "url", "notes")] +
+                                [f"{name}\n{'' if hidden else value}" for name, value, hidden in extra] +
+                                [name for name, _ in files]).lower()
     return entry
+
+
+# Fields shown elsewhere (the standard ones, 2FA) or that are other apps' bookkeeping (browser integration, passkeys)
+_HIDDEN_KEYS = set(_XML_KEYS.values()) | {"otp", "TOTP Seed", "TOTP Settings"} | set(totp.KEEPASS2_KEYS)
+_HIDDEN_PREFIXES = ("KPH:", "KPEX_", "_etm_")
 
 
 # ---------------------------------------------------------------- operations
