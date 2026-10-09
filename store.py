@@ -150,6 +150,21 @@ class Database:
         walk(kp.root_group, (), (), False)
         self.entries.sort(key=lambda e: e["title"].lower())
 
+    def history(self, entry_uuid):
+        """An entry's earlier versions, newest first: dicts with modified (local time), title, username,
+        password, url, notes. Read when asked for, so unlocking doesn't pay for it."""
+        e = _find_entry(self.kp, entry_uuid)
+        node = e._element.find("History") if e is not None else None
+        versions = []
+        for old in reversed(node.findall("Entry") if node is not None else []):
+            fields = string_fields(old)
+            times = old.find("Times")
+            stamp = times.find("LastModificationTime") if times is not None else None
+            when = self.kp._decode_time(stamp.text) if stamp is not None and stamp.text else None
+            versions.append(dict({name: fields.get(key) or "" for name, key in _XML_KEYS.items()},
+                                 modified=when.astimezone() if when else None))
+        return versions
+
     @property
     def recycle_bin_enabled(self):
         return self.kp.tree.getroot().findtext("Meta/RecycleBinEnabled") != "False"

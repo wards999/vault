@@ -1106,7 +1106,8 @@ class VaultView(QWidget):
         for keys, handler in (("Ctrl+C", self.copy_password), ("Ctrl+B", self.copy_username),
                               ("Ctrl+U", self.open_url), ("Return", self.edit_entry), ("Enter", self.edit_entry),
                               ("Ctrl+E", self.edit_entry), ("Delete", self.delete_entry),
-                              ("Ctrl+T", self.copy_totp), ("Ctrl+D", self.duplicate_entry)):
+                              ("Ctrl+T", self.copy_totp), ("Ctrl+D", self.duplicate_entry),
+                              ("Ctrl+H", self.show_history)):
             local_shortcut(keys, self.table, handler)
         self.table.setMinimumHeight(120)
 
@@ -1831,7 +1832,20 @@ class VaultView(QWidget):
                             triggered=self.delete_entry)
             delete.setShortcut(QKeySequence("Del"))
             menu.addAction(delete)
+        menu.addSeparator()
+        history = Action(icon("HISTORY"), "History…", triggered=self.show_history)
+        history.setShortcut(QKeySequence("Ctrl+H"))
+        menu.addAction(history)
         menu.exec(self.table.viewport().mapToGlobal(pos), ani=False)
+
+    def show_history(self):
+        """Earlier versions of the selected entry; restore one, or copy an old password."""
+        e = self.current_entry()
+        if not e or self.db is None:
+            return
+        dialog = HistoryDialog(self.window(), e, self.db.history(e["uuid"]), self._editable())
+        if dialog.exec() and dialog.op:
+            self.window().saver.submit(dialog.op, f"Restore of “{e['title']}”")
 
 
 # ---------------------------------------------------------------- editing
@@ -2531,6 +2545,107 @@ class IconFetcher(QObject):
     def _info(self, title, text):
         InfoBar.info(title, text, orient=Qt.Vertical, isClosable=True, position=InfoBarPosition.TOP_RIGHT,
                      duration=5000, parent=self.window)
+
+
+class HistoryDialog(MessageBoxBase):
+    """An entry's earlier versions (newest first): see what changed, copy an old password, or restore a
+    version. Restoring is an ordinary edit, so it can be undone and the current version goes into history."""
+
+    WHEN, USERNAME, PASSWORD, CHANGED = range(4)
+    LABELS = {"title": "Title", "username": "Username", "password": "Password", "url": "Website", "notes": "Notes"}
+
+    def __init__(self, parent, entry, versions, writable):
+        super().__init__(parent)
+        self.entry, self.versions, self.op = entry, versions, None
+        self.viewLayout.setSpacing(10)
+        self.viewLayout.addWidget(SubtitleLabel(f"History of “{entry['title']}”"))
+        self.viewLayout.addWidget(caption(
+            "Earlier versions, newest first. Restoring one keeps the current version in history, and can be undone."
+            if versions else "No earlier versions yet. Each time you change this entry, the old version is kept here."))
+        self.table = TableWidget()
+        self.table.setColumnCount(4)
+        self.table.setHorizontalHeaderLabels(["Saved", "Username", "Password", "Changed"])
+        self.table.verticalHeader().hide()
+        self.table.setWordWrap(False)
+        self.table.setBorderVisible(True)
+        self.table.setBorderRadius(8)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SingleSelection)
+        for col, width in ((self.WHEN, 150), (self.USERNAME, 170), (self.PASSWORD, 220)):
+            self.table.setColumnWidth(col, width)
+        self.table.horizontalHeader().setStretchLastSection(True)
+        self.table.setRowCount(len(versions))
+        newer = entry["raw"]
+        for row, version in enumerate(versions):
+            changed = [label for key, label in self.LABELS.items() if version[key] != newer[key]]
+            when = version["modified"].strftime("%b %d, %Y %H:%M") if version["modified"] else ""
+            for col, text in ((self.WHEN, when), (self.USERNAME, version["username"]),
+                              (self.CHANGED, ", ".join(changed) or "No visible change")):
+                self.table.setItem(row, col, QTableWidgetItem(text))
+            newer = version
+        self.table.setVisible(bool(versions))
+        self.viewLayout.addWidget(self.table, 1)
+
+        buttons = QHBoxLayout()
+        self.reveal = TransparentTogglePushButton(FIF.VIEW, "Show passwords")
+        self.reveal.toggled.connect(self._show_passwords)
+        self.copy = TransparentPushButton(FIF.COPY, "Copy password")
+        self.copy.clicked.connect(self._copy)
+        for button in (self.reveal, self.copy):
+            button.setVisible(bool(versions))
+            buttons.addWidget(button)
+        buttons.addStretch(1)
+        self.viewLayout.addLayout(buttons)
+        self._show_passwords(False)
+
+        self.yesButton.setText("Restore this version")
+        self.yesButton.setVisible(bool(versions) and writable)
+        self.cancelButton.setText("Close")
+        self.table.itemSelectionChanged.connect(self._update_buttons)
+        self.table.doubleClicked.connect(lambda _: self.yesButton.isVisible() and self.yesButton.click())
+        if versions:
+            self.table.selectRow(0)
+        self._update_buttons()
+        self.widget.setMinimumWidth(min(820, parent.width() - 80))
+        self.widget.setMinimumHeight(min(420 if versions else 0, parent.height() - 120))
+
+    def _row(self):
+        rows = self.table.selectionModel().selectedRows()
+        return rows[0].row() if rows else None
+
+    def _show_passwords(self, on):
+        for row, version in enumerate(self.versions):
+            password = version["password"]
+            item = QTableWidgetItem(password if on else ("•" * min(len(password), 12) if password else ""))
+            if on:
+                item.setFont(QFont(MONO_FAMILY))
+            self.table.setItem(row, self.PASSWORD, item)
+
+    def _update_buttons(self):
+        row = self._row()
+        self.copy.setEnabled(row is not None and bool(self.versions[row]["password"]))
+        self.yesButton.setEnabled(row is not None and self._restore_fields(row) != {})
+
+    def _copy(self):
+        row = self._row()
+        if row is not None:
+            self.window().copy_secret(self.versions[row]["password"], "Old password")
+
+    def _restore_fields(self, row):
+        version, raw = self.versions[row], self.entry["raw"]
+        return {key: version[key] for key in self.LABELS if version[key] != raw[key]}
+
+    def validate(self):
+        row = self._row()
+        if row is None:
+            return False
+        fields = self._restore_fields(row)
+        if fields:
+            e = self.entry
+            self.op = Op("update", e["uuid"], fields=fields, all_fields={**e["raw"], **fields}, folder=False,
+                         base_mtime=e["base_mtime"], title=fields.get("title", e["title"]))
+        return True
 
 
 class FindIconsDialog(MessageBoxBase):
