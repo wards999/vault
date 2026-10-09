@@ -1,4 +1,4 @@
-﻿"""Vault: a simple KeePass client (PySide6 + PySide6-Fluent-Widgets + pykeepass).
+"""Vault: a simple KeePass client (PySide6 + PySide6-Fluent-Widgets + pykeepass).
 
 Opens .kdbx files (any extension) such as one synced by Google Drive for Desktop, and
 auto-saves edits safely (see store.py: backups, verified atomic writes, merging changes
@@ -59,7 +59,7 @@ if sys.platform == "win32":  # for smooth resizing (MainWindow.nativeEvent)
     from ctypes.wintypes import MSG, RECT
     from qframelesswindow.windows.c_structures import LPNCCALCSIZE_PARAMS
 
-VERSION = "1.0.16"  # releases are tagged v<VERSION> (see .github/workflows/build.yml)
+VERSION = "1.0.15"  # releases are tagged v<VERSION> (see .github/workflows/build.yml)
 IDLE_LOCK_CHOICES = {"Never": 0, "After 1 minute": 1, "After 2 minutes": 2, "After 5 minutes": 5,
                      "After 10 minutes": 10, "After 15 minutes": 15, "After 30 minutes": 30, "After 1 hour": 60,
                      "After 2 hours": 120, "After 5 hours": 300}
@@ -147,7 +147,7 @@ def theme_swatch(name, size=16):
     p.end()
     pm.setDevicePixelRatio(scale)
     return QIcon(pm)
-MASK = "â€¢" * 8  # fixed length, so the mask doesn't reveal password length
+MASK = "•" * 8  # fixed length, so the mask doesn't reveal password length
 
 FROZEN = getattr(sys, "frozen", False)  # running as the packaged Vault.exe
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))  # bundled icons etc.
@@ -241,14 +241,14 @@ def cache_svg_icons():
 cache_svg_icons()
 
 # Fonts: name exactly one font that the system has. Lists with fonts that aren't installed (the UI
-# library's default "Segoe UI, Microsoft YaHei, PingFang SC", or "Cascadia Mono, Consolas, Menloâ€¦")
+# library's default "Segoe UI, Microsoft YaHei, PingFang SC", or "Cascadia Mono, Consolas, Menlo…")
 # make Qt load the details of every font on the computer: about 40 MB each, kept for good.
 MONO_FAMILY = "Menlo" if sys.platform == "darwin" else "Consolas"  # built into every Mac / Windows
 
 
 def shortcut_text(text):
-    """Shortcut text as this system writes it: Qt's Ctrl is the Command key on macOS ("Ctrl+N" â†’ "âŒ˜N")."""
-    return text.replace("Ctrl + ", "âŒ˜ ").replace("Ctrl+", "âŒ˜") if sys.platform == "darwin" else text
+    """Shortcut text as this system writes it: Qt's Ctrl is the Command key on macOS ("Ctrl+N" → "⌘N")."""
+    return text.replace("Ctrl + ", "⌘ ").replace("Ctrl+", "⌘") if sys.platform == "darwin" else text
 
 
 def trim_memory():
@@ -504,12 +504,12 @@ class EntryDelegate(TableItemDelegate):
         r = option.rect
         x, right = r.x() + self.PADDING, r.right() - 6
         baseline = r.y() + (r.height() + fm.ascent() - fm.descent()) // 2
-        ellipsis_w = fm.horizontalAdvance("â€¦")
+        ellipsis_w = fm.horizontalAdvance("…")
         for i, ch in enumerate(password):
             w = fm.horizontalAdvance(ch)
             if x + w > right - (ellipsis_w if i < len(password) - 1 else 0):
                 painter.setPen(normal)
-                painter.drawText(x, baseline, "â€¦")
+                painter.drawText(x, baseline, "…")
                 break
             kind = char_kind(ch) if self.colorize else "lower"
             coloured = kind in PASSWORD_COLORS
@@ -964,8 +964,8 @@ class NotesPanel(SimpleCardWidget):
         self.extra_box.setVisible(bool(fields or files))
         for row, (name, value, hidden) in enumerate(fields):
             self.extra.addWidget(caption(name), row, 0)
-            shown = value.splitlines()[0] + " â€¦" if "\n" in value else value
-            label = BodyLabel("â€¢" * 8 if hidden and value else shown)
+            shown = value.splitlines()[0] + " …" if "\n" in value else value
+            label = BodyLabel("•" * 8 if hidden and value else shown)
             label.setMaximumWidth(420)
             if not hidden:
                 label.setToolTip(value)
@@ -974,7 +974,7 @@ class NotesPanel(SimpleCardWidget):
             if hidden and value:
                 reveal = TransparentToggleToolButton(FIF.VIEW)
                 reveal.setToolTip("Show")
-                reveal.toggled.connect(lambda on, lbl=label, v=shown: lbl.setText(v if on else "â€¢" * 8))
+                reveal.toggled.connect(lambda on, lbl=label, v=shown: lbl.setText(v if on else "•" * 8))
                 self.extra.addWidget(reveal, row, 2)
             if value:
                 copy = TransparentToolButton(FIF.COPY)
@@ -990,7 +990,7 @@ class NotesPanel(SimpleCardWidget):
             line.setSpacing(4)
             for name, size in files:
                 button = TransparentPushButton(AppIcon("attach"), f"{name}  ({file_size(size)})")
-                button.setToolTip(f"Save {name}â€¦")
+                button.setToolTip(f"Save {name}…")
                 button.clicked.connect(lambda _=False, n=name: self.save_attachment(n))
                 line.addWidget(button)
             line.addStretch(1)
@@ -1041,10 +1041,10 @@ class NotesPanel(SimpleCardWidget):
             self.notes.clear()
             return
         self.title.setText(e["title"])
-        self.path.setText("   " + (" â€º ".join(e["path"]) or "Root"))
+        self.path.setText("   " + (" › ".join(e["path"]) or "Root"))
         status = f"Modified {e['modified']}" if e["modified"] else ""
         if e["expired"]:
-            status = "Expired  Â·  " + status
+            status = "Expired  ·  " + status
         self.modified.setText(status)
         self.notes.setPlainText(e["notes"])
 
@@ -1096,7 +1096,7 @@ class VaultView(QWidget):
         tree_head.addWidget(self.new_folder_btn)
         tree_col.addLayout(tree_head)
         self.tree = FolderTree()
-        self.folder_delegate = FolderRowDelegate(self.tree)  # row height follows Settings â†’ Row density
+        self.folder_delegate = FolderRowDelegate(self.tree)  # row height follows Settings → Row density
         self.tree.setItemDelegate(self.folder_delegate)
         self.tree.entriesDropped.connect(self._on_entries_dropped)
         self.tree.folderDropped.connect(self._on_folder_dropped)
@@ -1119,7 +1119,7 @@ class VaultView(QWidget):
         right.setSpacing(8)
         head = QHBoxLayout()
         head.setSpacing(8)
-        # One line: folder name, then "302 entries Â· All changes saved" beside it (it used to take two).
+        # One line: folder name, then "302 entries · All changes saved" beside it (it used to take two).
         titles = QHBoxLayout()
         titles.setSpacing(10)
         self.list_title = SubtitleLabel("")
@@ -1226,7 +1226,7 @@ class VaultView(QWidget):
         self.notes = NotesPanel()
 
         # List text size: Ctrl + mouse wheel, Ctrl+= / Ctrl+- and Ctrl+0 (normal) over the folders,
-        # entries and notes, or Settings â†’ List text size. Changes straight away.
+        # entries and notes, or Settings → List text size. Changes straight away.
         self._wheel_zoom = 0
         for area in (self.table.viewport(), self.tree.viewport(), self.notes.notes.viewport()):
             area.installEventFilter(self)
@@ -1339,7 +1339,7 @@ class VaultView(QWidget):
         while it.value():
             item = it.value()
             if getattr(self, "_tree_font", None) is not None:
-                item.setData(0, Qt.FontRole, self._tree_font)  # Settings â†’ List text size
+                item.setData(0, Qt.FontRole, self._tree_font)  # Settings → List text size
             own = None  # the folder's own icon from the database (as KeePass shows it), if it has one
             if item.parent() and not item.data(0, Qt.UserRole + 1) and self.model.icons and item.data(0, Qt.UserRole + 2):
                 own = self.model.icons.folder(item.data(0, Qt.UserRole + 2))
@@ -1624,7 +1624,7 @@ class VaultView(QWidget):
             folder = None
         editor = EntryEditor(self.window(), self.db, folder_id=folder)
         if editor.exec() and editor.op:
-            self.window().saver.submit(editor.op, f"New entry â€œ{editor.op.title}â€")
+            self.window().saver.submit(editor.op, f"New entry “{editor.op.title}”")
             self.load(self.db, keep_state=True, select_uuid=editor.op.uuid)
             self._auto_icon(editor.op)
 
@@ -1634,7 +1634,7 @@ class VaultView(QWidget):
             return
         editor = EntryEditor(self.window(), self.db, entry=e)
         if editor.exec() and editor.op:
-            self.window().saver.submit(editor.op, f"Edit of â€œ{e['title']}â€")
+            self.window().saver.submit(editor.op, f"Edit of “{e['title']}”")
             if "url" in editor.op.fields:
                 self._auto_icon(editor.op)
 
@@ -1651,18 +1651,18 @@ class VaultView(QWidget):
         permanent = e["in_bin"] or not self.db.recycle_bin_enabled
         if permanent:
             box = MessageBox("Delete permanently?",
-                             f"â€œ{e['title']}â€ will be deleted for good. This can't be undone "
+                             f"“{e['title']}” will be deleted for good. This can't be undone "
                              "(except from Vault's backups).", self.window())
             box.yesButton.setText("Delete permanently")
         else:
             box = MessageBox("Move to Recycle Bin?",
-                             f"â€œ{e['title']}â€ will be moved to the Recycle Bin. "
+                             f"“{e['title']}” will be moved to the Recycle Bin. "
                              "You can still find it there.", self.window())
             box.yesButton.setText("Move to Recycle Bin")
         box.cancelButton.setText("Cancel")
         if box.exec():
             self.window().saver.submit(Op("delete" if permanent else "trash", e["uuid"], title=e["title"]))
-            self.window().undo_toast("Deleted" if permanent else "Moved to Recycle Bin", f"â€œ{e['title']}â€")
+            self.window().undo_toast("Deleted" if permanent else "Moved to Recycle Bin", f"“{e['title']}”")
 
     def undo(self):
         if not self._editable():
@@ -1684,17 +1684,17 @@ class VaultView(QWidget):
         if not e or not self._editable():
             return
         op = store.duplicate_op(self.db.kp, e["uuid"])
-        self.window().saver.submit(op, f"Duplicate of â€œ{e['title']}â€")
+        self.window().saver.submit(op, f"Duplicate of “{e['title']}”")
         self.load(self.db, keep_state=True, select_uuid=op.uuid)
 
     def move_entry(self):
         e = self.current_entry()
         if not e or not self._editable():
             return
-        dialog = FolderPickerDialog(self.window(), self.db, f"Move â€œ{e['title']}â€ to", e["folder_id"])
+        dialog = FolderPickerDialog(self.window(), self.db, f"Move “{e['title']}” to", e["folder_id"])
         if dialog.exec() and dialog.folder != e["folder_id"]:
             self.window().saver.submit(Op("move", e["uuid"], folder=dialog.folder, title=e["title"]),
-                                       f"Move of â€œ{e['title']}â€")
+                                       f"Move of “{e['title']}”")
 
     def copy_totp(self):
         e = self.current_entry()
@@ -1720,11 +1720,11 @@ class VaultView(QWidget):
         if record and record["in_bin"]:
             parent = None
         dialog = NameDialog(self.window(), "New folder", "Folder name", "",
-                            f"Inside: {' â€º '.join(record['path']) if record and not record['in_bin'] else self.db.name}")
+                            f"Inside: {' › '.join(record['path']) if record and not record['in_bin'] else self.db.name}")
         if dialog.exec():
             op = Op("folder_create", uuidlib.uuid4().hex, fields={"name": dialog.name}, folder=parent,
                     title=dialog.name)
-            self.window().saver.submit(op, f"New folder â€œ{dialog.name}â€")
+            self.window().saver.submit(op, f"New folder “{dialog.name}”")
             self.folder = op.uuid
             self.load(self.db, keep_state=True)
 
@@ -1735,26 +1735,26 @@ class VaultView(QWidget):
         dialog = NameDialog(self.window(), "Rename folder", "Folder name", record["name"])
         if dialog.exec() and dialog.name != record["name"]:
             self.window().saver.submit(Op("folder_rename", folder_id, fields={"name": dialog.name}, title=dialog.name),
-                                       f"Rename of â€œ{record['name']}â€")
+                                       f"Rename of “{record['name']}”")
 
     def change_folder_icon(self, folder_id):
         record = self._folder_record(folder_id)
         if not record or not self._editable():
             return
-        dialog = IconPickerDialog(self.window(), f"Icon for folder â€œ{record['name']}â€",
+        dialog = IconPickerDialog(self.window(), f"Icon for folder “{record['name']}”",
                                   record.get("icon", (store.FOLDER_ICON, None)), "Plain folder", store.FOLDER_ICON)
         if dialog.exec() and dialog.choice:
             self.window().saver.submit(Op("folder_icon", folder_id, title=record["name"], **dialog.choice),
-                                       f"Icon of folder â€œ{record['name']}â€")
+                                       f"Icon of folder “{record['name']}”")
 
     def change_entry_icon(self):
         e = self.current_entry()
         if not e or not self._editable():
             return
-        dialog = IconPickerDialog(self.window(), f"Icon for â€œ{e['title']}â€", e["icon"], "Default (letter)", 0)
+        dialog = IconPickerDialog(self.window(), f"Icon for “{e['title']}”", e["icon"], "Default (letter)", 0)
         if dialog.exec() and dialog.choice:
             self.window().saver.submit(Op("set_icon", e["uuid"], title=e["title"], **dialog.choice),
-                                       f"Icon of â€œ{e['title']}â€")
+                                       f"Icon of “{e['title']}”")
 
     def delete_folder(self, folder_id):
         record = self._folder_record(folder_id)
@@ -1765,18 +1765,18 @@ class VaultView(QWidget):
         contents = f" and the {count} entr{'y' if count == 1 else 'ies'} in it" if count else ""
         if permanent:
             box = MessageBox("Delete folder permanently?",
-                             f"â€œ{record['name']}â€{contents} will be deleted for good.", self.window())
+                             f"“{record['name']}”{contents} will be deleted for good.", self.window())
             box.yesButton.setText("Delete permanently")
         else:
             box = MessageBox("Move folder to Recycle Bin?",
-                             f"â€œ{record['name']}â€{contents} will be moved to the Recycle Bin.", self.window())
+                             f"“{record['name']}”{contents} will be moved to the Recycle Bin.", self.window())
             box.yesButton.setText("Move to Recycle Bin")
         box.cancelButton.setText("Cancel")
         if box.exec():
             kind = "folder_delete" if permanent else "folder_trash"
-            self.window().saver.submit(Op(kind, folder_id, title=record["name"]), f"Folder â€œ{record['name']}â€")
+            self.window().saver.submit(Op(kind, folder_id, title=record["name"]), f"Folder “{record['name']}”")
             self.window().undo_toast("Deleted folder" if permanent else "Moved folder to Recycle Bin",
-                                     f"â€œ{record['name']}â€")
+                                     f"“{record['name']}”")
 
     def _on_entries_dropped(self, uuids, target):
         if not self._editable():
@@ -1785,7 +1785,7 @@ class VaultView(QWidget):
         moving = [by_id[u] for u in uuids if u in by_id and by_id[u]["folder_id"] != target]
         if not moving:
             return
-        names = ", ".join(f"â€œ{e['title']}â€" for e in moving[:3]) + (" â€¦" if len(moving) > 3 else "")
+        names = ", ".join(f"“{e['title']}”" for e in moving[:3]) + (" …" if len(moving) > 3 else "")
         if target is not None and target == self.db.bin_id:
             ops = [Op("trash", e["uuid"], title=e["title"]) for e in moving]
             self.window().saver.submit_many(ops, f"Delete of {names}")
@@ -1804,20 +1804,20 @@ class VaultView(QWidget):
             self.delete_folder(folder_id)  # asks first, like the menu
             return
         self.window().saver.submit(Op("folder_move", folder_id, folder=target, title=record["name"]),
-                                   f"Move of folder â€œ{record['name']}â€")
+                                   f"Move of folder “{record['name']}”")
         destination = self._folder_record(target)
-        self.window().undo_toast("Moved folder", f"â€œ{record['name']}â€ into "
+        self.window().undo_toast("Moved folder", f"“{record['name']}” into "
                                  f"{destination['name'] if destination else self.db.name}")
 
     def move_folder(self, folder_id):
         record = self._folder_record(folder_id)
         if not record or not self._editable():
             return
-        dialog = FolderPickerDialog(self.window(), self.db, f"Move folder â€œ{record['name']}â€ into", record["parent"],
+        dialog = FolderPickerDialog(self.window(), self.db, f"Move folder “{record['name']}” into", record["parent"],
                                     exclude=folder_id)
         if dialog.exec() and dialog.folder != record["parent"]:
             self.window().saver.submit(Op("folder_move", folder_id, folder=dialog.folder, title=record["name"]),
-                                       f"Move of folder â€œ{record['name']}â€")
+                                       f"Move of folder “{record['name']}”")
 
     def _folder_menu(self, pos):
         item = self.tree.itemAt(pos)
@@ -1828,19 +1828,19 @@ class VaultView(QWidget):
         is_bin = folder_id is not None and folder_id == self.db.bin_id
         menu = RoundMenu(parent=self)
         if not in_bin:
-            menu.addAction(Action(icon("FOLDER_ADD", "ADD"), "New folder insideâ€¦",
+            menu.addAction(Action(icon("FOLDER_ADD", "ADD"), "New folder inside…",
                                   triggered=lambda: self.new_folder(folder_id)))
         if folder_id is not None and not is_bin:
-            menu.addAction(Action(FIF.EDIT, "Renameâ€¦", triggered=lambda: self.rename_folder(folder_id)))
-            menu.addAction(Action(icon("PHOTO", "PALETTE"), "Change iconâ€¦",
+            menu.addAction(Action(FIF.EDIT, "Rename…", triggered=lambda: self.rename_folder(folder_id)))
+            menu.addAction(Action(icon("PHOTO", "PALETTE"), "Change icon…",
                                   triggered=lambda: self.change_folder_icon(folder_id)))
-            menu.addAction(Action(icon("MOVE", "FOLDER"), "Move toâ€¦", triggered=lambda: self.move_folder(folder_id)))
+            menu.addAction(Action(icon("MOVE", "FOLDER"), "Move to…", triggered=lambda: self.move_folder(folder_id)))
             menu.addSeparator()
             permanent = in_bin or not self.db.recycle_bin_enabled
-            menu.addAction(Action(FIF.DELETE, "Delete permanentlyâ€¦" if permanent else "Move to Recycle Binâ€¦",
+            menu.addAction(Action(FIF.DELETE, "Delete permanently…" if permanent else "Move to Recycle Bin…",
                                   triggered=lambda: self.delete_folder(folder_id)))
         if is_bin:
-            empty = Action(FIF.DELETE, "Empty Recycle Binâ€¦", triggered=self.empty_recycle_bin)
+            empty = Action(FIF.DELETE, "Empty Recycle Bin…", triggered=self.empty_recycle_bin)
             empty.setEnabled(any(e["in_bin"] for e in self.db.entries) or
                              any(f["parent"] == folder_id for f in self.db.folders))
             menu.addAction(empty)
@@ -1874,7 +1874,7 @@ class VaultView(QWidget):
         self.window().undo_toast("Recycle Bin emptied", f"{what} deleted.")
 
     def set_save_status(self, text):
-        self.save_status.setText(f"Â·  {text}" if text else "")
+        self.save_status.setText(f"·  {text}" if text else "")
 
     def copy_username(self):
         e = self.current_entry()
@@ -1928,24 +1928,24 @@ class VaultView(QWidget):
             menu.addAction(totp_action)
         if self._editable():
             menu.addSeparator()
-            edit = Action(FIF.EDIT, "Editâ€¦", triggered=self.edit_entry)
+            edit = Action(FIF.EDIT, "Edit…", triggered=self.edit_entry)
             edit.setShortcut(QKeySequence("Enter"))
             menu.addAction(edit)
             duplicate = Action(FIF.COPY, "Duplicate", triggered=self.duplicate_entry)
             duplicate.setShortcut(QKeySequence("Ctrl+D"))
             menu.addAction(duplicate)
-            menu.addAction(Action(icon("MOVE", "FOLDER"), "Move toâ€¦", triggered=self.move_entry))
+            menu.addAction(Action(icon("MOVE", "FOLDER"), "Move to…", triggered=self.move_entry))
             fetch = Action(icon("GLOBE", "PHOTO"), "Download site icon", triggered=self.download_icon)
             fetch.setEnabled(bool(favicon.site_host(e["url"])))
             menu.addAction(fetch)
-            menu.addAction(Action(icon("PHOTO", "PALETTE"), "Change iconâ€¦", triggered=self.change_entry_icon))
+            menu.addAction(Action(icon("PHOTO", "PALETTE"), "Change icon…", triggered=self.change_entry_icon))
             permanent = e["in_bin"] or not self.db.recycle_bin_enabled
-            delete = Action(FIF.DELETE, "Delete permanentlyâ€¦" if permanent else "Move to Recycle Binâ€¦",
+            delete = Action(FIF.DELETE, "Delete permanently…" if permanent else "Move to Recycle Bin…",
                             triggered=self.delete_entry)
             delete.setShortcut(QKeySequence("Del"))
             menu.addAction(delete)
         menu.addSeparator()
-        history = Action(icon("HISTORY"), "Historyâ€¦", triggered=self.show_history)
+        history = Action(icon("HISTORY"), "History…", triggered=self.show_history)
         history.setShortcut(QKeySequence("Ctrl+H"))
         menu.addAction(history)
         menu.exec(self.table.viewport().mapToGlobal(pos), ani=False)
@@ -1957,7 +1957,7 @@ class VaultView(QWidget):
             return
         dialog = HistoryDialog(self.window(), e, self.db.history(e["uuid"]), self._editable())
         if dialog.exec() and dialog.op:
-            self.window().saver.submit(dialog.op, f"Restore of â€œ{e['title']}â€")
+            self.window().saver.submit(dialog.op, f"Restore of “{e['title']}”")
 
 
 # ---------------------------------------------------------------- editing
@@ -2067,7 +2067,7 @@ class PasswordGenerator(SimpleCardWidget):
         p.addLayout(row)
         boxes = QHBoxLayout()
         self.classes = {}
-        for key, text in (("upper", "Aâ€“Z"), ("lower", "aâ€“z"), ("digits", "0â€“9"), ("symbols", "!@#$")):
+        for key, text in (("upper", "A–Z"), ("lower", "a–z"), ("digits", "0–9"), ("symbols", "!@#$")):
             box = CheckBox(text)
             box.setChecked(setting(f"gen/{key}", True))
             self.classes[key] = box
@@ -2246,7 +2246,7 @@ class EntryEditor(MessageBoxBase):
 
         self.folder = ComboBox()
         current = entry["folder_id"] if entry else folder_id
-        choices = [(db.name, None)] + [(" â€º ".join(f["path"]), f["id"]) for f in db.folders
+        choices = [(db.name, None)] + [(" › ".join(f["path"]), f["id"]) for f in db.folders
                                        if not f["in_bin"] or f["id"] == current]
         for text, folder in choices:
             self.folder.addItem(text, userData=folder)
@@ -2412,7 +2412,7 @@ class EntryEditor(MessageBoxBase):
         color = QColor(STRENGTH_COLORS[level])
         self.strength_bar.setCustomBarColor(color, color)
         self.strength_bar.setValue(max(score, 4))
-        self.strength_label.setText(f"{label} Â· ~{int(bits)} bits")
+        self.strength_label.setText(f"{label} · ~{int(bits)} bits")
 
     def validate(self):
         if not self.title.text().strip():
@@ -2498,7 +2498,7 @@ class IconPickerDialog(MessageBoxBase):
         default = PushButton(default_label)
         default.clicked.connect(self._default_chosen)
         row.addWidget(default)
-        image = PushButton(icon("PHOTO", "FOLDER"), "Use an image fileâ€¦")
+        image = PushButton(icon("PHOTO", "FOLDER"), "Use an image file…")
         image.clicked.connect(self._image_chosen)
         row.addWidget(image)
         row.addStretch(1)
@@ -2565,7 +2565,7 @@ class FolderPickerDialog(MessageBoxBase):
         excluded = set()
         if exclude:  # a folder can't move into itself or its subfolders
             excluded = {exclude} | {f["id"] for f in db.folders if exclude in folder_ancestors(db, f["id"])}
-        choices = [(db.name, None)] + [(" â€º ".join(f["path"]), f["id"]) for f in db.folders
+        choices = [(db.name, None)] + [(" › ".join(f["path"]), f["id"]) for f in db.folders
                                        if not f["in_bin"] and f["id"] not in excluded]
         for text, folder in choices:
             self.combo.addItem(text, userData=folder)
@@ -2616,7 +2616,7 @@ class IconFetcher(QObject):
         allow_ddg = setting("icons_duckduckgo", False)
         bar = None
         if len(jobs) > 1:
-            bar = InfoBar.info("Downloading site icons", f"0 of {len(jobs)}â€¦", orient=Qt.Horizontal,
+            bar = InfoBar.info("Downloading site icons", f"0 of {len(jobs)}…", orient=Qt.Horizontal,
                                isClosable=False, position=InfoBarPosition.BOTTOM_RIGHT, duration=-1,
                                parent=self.window)
 
@@ -2630,7 +2630,7 @@ class IconFetcher(QObject):
 
         def update_progress():
             if self.running and bar is not None:
-                bar.contentLabel.setText(f"{progress['done']} of {len(jobs)}â€¦")
+                bar.contentLabel.setText(f"{progress['done']} of {len(jobs)}…")
                 QTimer.singleShot(300, update_progress)
 
         def done(results, error):
@@ -2670,7 +2670,7 @@ class HistoryDialog(MessageBoxBase):
         super().__init__(parent)
         self.entry, self.versions, self.op = entry, versions, None
         self.viewLayout.setSpacing(10)
-        self.viewLayout.addWidget(SubtitleLabel(f"History of â€œ{entry['title']}â€"))
+        self.viewLayout.addWidget(SubtitleLabel(f"History of “{entry['title']}”"))
         self.viewLayout.addWidget(caption(
             "Earlier versions, newest first. Restoring one keeps the current version in history, and can be undone."
             if versions else "No earlier versions yet. Each time you change this entry, the old version is kept here."))
@@ -2729,7 +2729,7 @@ class HistoryDialog(MessageBoxBase):
     def _show_passwords(self, on):
         for row, version in enumerate(self.versions):
             password = version["password"]
-            item = QTableWidgetItem(password if on else ("â€¢" * min(len(password), 12) if password else ""))
+            item = QTableWidgetItem(password if on else ("•" * min(len(password), 12) if password else ""))
             if on:
                 item.setFont(QFont(MONO_FAMILY))
             self.table.setItem(row, self.PASSWORD, item)
@@ -2771,7 +2771,7 @@ def show_strength(bar, label, value):
     color = QColor(STRENGTH_COLORS[level])
     bar.setCustomBarColor(color, color)
     bar.setValue(max(score, 4))
-    label.setText(f"{text} Â· ~{int(bits)} bits")
+    label.setText(f"{text} · ~{int(bits)} bits")
 
 
 def strength_row(dialog):
@@ -2807,7 +2807,7 @@ class NewDatabaseDialog(MessageBoxBase):
         self.folder = str(start_dir)
         self.place_label = caption("")
         place.addWidget(self.place_label, 1)
-        change = PushButton(FIF.FOLDER, "Changeâ€¦")
+        change = PushButton(FIF.FOLDER, "Change…")
         change.clicked.connect(self._choose_folder)
         place.addWidget(change)
         self.viewLayout.addLayout(place)
@@ -2900,7 +2900,7 @@ class ChangeMasterDialog(MessageBoxBase):
         keys = QHBoxLayout()
         self.key_label = caption("")
         keys.addWidget(self.key_label, 1)
-        choose = TransparentPushButton(FIF.FOLDER, "Choose key fileâ€¦")
+        choose = TransparentPushButton(FIF.FOLDER, "Choose key file…")
         choose.clicked.connect(self._choose_keyfile)
         keys.addWidget(choose)
         self.remove_key = TransparentPushButton(FIF.REMOVE, "No key file")
@@ -3012,7 +3012,7 @@ class FindIconsDialog(MessageBoxBase):
             use.setCheckState(Qt.Unchecked)
             name = QTableWidgetItem(e["title"])
             name.setFlags(Qt.ItemIsEnabled)
-            name.setToolTip(" â€º ".join(e["path"]) or "Root")
+            name.setToolTip(" › ".join(e["path"]) or "Root")
             site = QTableWidgetItem("")
             site.setToolTip("Type or correct the website, e.g. bbc.co.uk")
             for col, item in ((self.USE, use), (self.ENTRY, name), (self.SITE, site)):
@@ -3046,7 +3046,7 @@ class FindIconsDialog(MessageBoxBase):
         ddg = setting("icons_duckduckgo", False)
         for row, e in enumerate(self.entries):
             if row not in self._typed:
-                self._request(row, "Searchingâ€¦", lambda title=e["title"]: sitefinder.find(title, country, ddg))
+                self._request(row, "Searching…", lambda title=e["title"]: sitefinder.find(title, country, ddg))
 
     def _request(self, row, status, job):
         self._requests[row] += 1
@@ -3095,7 +3095,7 @@ class FindIconsDialog(MessageBoxBase):
         self.table.item(item.row(), self.USE).setCheckState(Qt.Unchecked)
         self._filling = False
         if typed:
-            self._request(item.row(), "Checkingâ€¦", lambda: sitefinder.icon_for(typed, ddg))
+            self._request(item.row(), "Checking…", lambda: sitefinder.icon_for(typed, ddg))
         else:
             self._set_status(item.row(), "")
 
@@ -3103,7 +3103,7 @@ class FindIconsDialog(MessageBoxBase):
         self.table.item(row, self.STATUS).setText(text)
 
     def _update_progress(self):
-        self.progress.setText(f"Searchingâ€¦ {self._pending} left" if self._pending else
+        self.progress.setText(f"Searching… {self._pending} left" if self._pending else
                               f"{sum(1 for r in range(self.table.rowCount()) if self._icon(r))} of "
                               f"{len(self.entries)} found")
 
@@ -3139,13 +3139,13 @@ class ConflictDialog(MessageBoxBase):
         name = conflict.op.title or "An entry"
         self.viewLayout.addWidget(SubtitleLabel("Changed in two places"))
         if conflict.reason == "changed":
-            text = (f"â€œ{name}â€ was changed by another device or app after you started editing it.\n\n"
+            text = (f"“{name}” was changed by another device or app after you started editing it.\n\n"
                     "Keep mine: your version is saved; theirs is kept in the entry's history.\n"
                     "Keep theirs: your edit is discarded.\n"
                     "Keep both: your version is saved as a separate copy.")
             mine, theirs = "Keep mine", "Keep theirs"
         else:
-            text = (f"â€œ{name}â€ was deleted by another device or app after you started editing it.\n\n"
+            text = (f"“{name}” was deleted by another device or app after you started editing it.\n\n"
                     "Restore it with your changes, or leave it deleted?")
             mine, theirs = "Restore with my changes", "Leave it deleted"
         body = BodyLabel(text)
@@ -3244,7 +3244,7 @@ class SaveController(QObject):
             return
         if self.busy:
             self.queued.append((ops, label, undoable, force))
-            self.status.emit("Savingâ€¦")
+            self.status.emit("Saving…")
             return
         self._apply_batch(ops, label, undoable, force)
 
@@ -3296,7 +3296,7 @@ class SaveController(QObject):
         if self.busy or not self.unsaved or self.db is None:
             return
         self.busy = True
-        self.status.emit("Savingâ€¦")
+        self.status.emit("Saving…")
         backup = time.time() - self.last_backup > store.BACKUP_INTERVAL
         db = self.db
         run_in_background(self, lambda: store.save_database(db.kp, db.path, db.digest, backup=backup),
@@ -3311,7 +3311,7 @@ class SaveController(QObject):
         self.busy = False
         if error:
             self.failed = True
-            self.status.emit("Couldn't save â€” will retry")
+            self.status.emit("Couldn't save — will retry")
             InfoBar.error("Couldn't save your changes", f"{error}\nVault will keep trying.", orient=Qt.Vertical,
                           isClosable=True, position=InfoBarPosition.TOP_RIGHT, duration=8000, parent=self.window)
             if self.flush_callbacks:
@@ -3338,7 +3338,7 @@ class SaveController(QObject):
 
     def _merge(self, data):
         """The file changed elsewhere: reload it and re-apply our unsaved edits on top."""
-        self.status.emit("Merging changes from another deviceâ€¦")
+        self.status.emit("Merging changes from another device…")
         db = self.db
         run_in_background(self, lambda: store.open_kp(data, db.kp.password, db.kp.keyfile),
                           lambda fresh, error: self._merged(db, data, fresh, error))
@@ -3383,7 +3383,7 @@ class SaveController(QObject):
             old = store.set_credentials(db.kp, password, keyfile)
             self.busy = True
             self.save_timer.stop()
-            self.status.emit("Savingâ€¦")
+            self.status.emit("Saving…")
             run_in_background(self, lambda: store.save_database(db.kp, db.path, db.digest, backup=True),
                               lambda new_digest, error: finished(db, old, new_digest, error))
 
@@ -3503,7 +3503,7 @@ class HealthCard(CardWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 10, 16, 10)
         layout.setSpacing(0)
-        self.count = TitleLabel("â€“")
+        self.count = TitleLabel("–")
         self.count.setTextColor(QColor(ISSUE_COLORS[issue]), QColor(ISSUE_COLORS[issue]).lighter(150))
         layout.addWidget(self.count)
         layout.addWidget(caption(health.ISSUES[issue][0]))
@@ -3594,7 +3594,7 @@ class HealthView(QWidget):
             return
         self.dirty = False
         entries = list(self.db.entries)
-        self.empty.setText("Checking passwordsâ€¦")
+        self.empty.setText("Checking passwords…")
         run_in_background(self, lambda: health.report(entries), self._done)
 
     def _done(self, issues, error):
@@ -3627,7 +3627,7 @@ class HealthView(QWidget):
         if self.db is None:
             self.empty.setText("")
         elif not self.issues:
-            self.empty.setText("No problems found. ðŸŽ‰")
+            self.empty.setText("No problems found. 🎉")
         else:
             self.empty.setText("")
 
@@ -3644,7 +3644,7 @@ class HealthView(QWidget):
             return
         editor = EntryEditor(self.window(), self.db, entry=e)
         if editor.exec() and editor.op:
-            self.window().saver.submit(editor.op, f"Edit of â€œ{e['title']}â€")
+            self.window().saver.submit(editor.op, f"Edit of “{e['title']}”")
             if "url" in editor.op.fields:
                 self.window().vault._auto_icon(editor.op)
             if self.dirty:
@@ -3689,7 +3689,7 @@ class SettingsView(ScrollArea):
         preview.setSpacing(18)
         preview.addWidget(caption("Preview:"))
         self.preview_title = BodyLabel("GitHub")
-        self.preview_user, self.preview_pass = BodyLabel("alice@example.com"), BodyLabel("â€¢" * 8)
+        self.preview_user, self.preview_pass = BodyLabel("alice@example.com"), BodyLabel("•" * 8)
         for label in (self.preview_title, self.preview_user, self.preview_pass):
             preview.addWidget(label)
         preview.addStretch(1)
@@ -3736,7 +3736,7 @@ class SettingsView(ScrollArea):
 
         root.addSpacing(8)
         root.addWidget(SubtitleLabel("Database"))
-        change = PushButton(AppIcon("lock"), "Changeâ€¦")
+        change = PushButton(AppIcon("lock"), "Change…")
         change.clicked.connect(lambda: self.window().change_master_password())
         root.addWidget(self._row(
             "Master password", "Change the password (or key file) that opens the open database. A backup that "
@@ -3765,10 +3765,10 @@ class SettingsView(ScrollArea):
         b.addWidget(refresh)
         root.addWidget(self._row("Update icons", "For entries that have a website address. Refreshing picks up "
                                  "sites that have changed their icon.", buttons))
-        finder = PushButton(FIF.SEARCH, "Find icons by nameâ€¦")
+        finder = PushButton(FIF.SEARCH, "Find icons by name…")
         finder.clicked.connect(on_find_icons)
         root.addWidget(self._row(
-            "Entries without a website", "Guess each entry's website from its name (e.g. â€œBritish Gasâ€ â†’ "
+            "Entries without a website", "Guess each entry's website from its name (e.g. “British Gas” → "
             "britishgas.co.uk) and get its icon. You check every guess before anything changes.", finder))
         root.addStretch(1)
         root.addWidget(caption(f"Vault {VERSION}"), 0, Qt.AlignRight)
@@ -3838,10 +3838,10 @@ class UnlockDialog(MessageBoxBase):
         file_row = QHBoxLayout()
         self.file_label = caption("")
         file_row.addWidget(self.file_label, 1)
-        choose = PushButton(FIF.FOLDER, "Chooseâ€¦")
+        choose = PushButton(FIF.FOLDER, "Choose…")
         choose.clicked.connect(self._choose_file)
         file_row.addWidget(choose)
-        self.new_btn = TransparentPushButton(FIF.ADD, "Newâ€¦")
+        self.new_btn = TransparentPushButton(FIF.ADD, "New…")
         self.new_btn.setToolTip("Create a new, empty database")
         self.new_btn.clicked.connect(self._new_database)
         file_row.addWidget(self.new_btn)
@@ -3860,7 +3860,7 @@ class UnlockDialog(MessageBoxBase):
         self.key_clear.setToolTip("Don't use a key file")
         self.key_clear.clicked.connect(lambda: self._set_keyfile(""))
         key_row.addWidget(self.key_clear)
-        key_btn = PushButton(icon("FINGERPRINT", "CERTIFICATE"), "Key fileâ€¦")
+        key_btn = PushButton(icon("FINGERPRINT", "CERTIFICATE"), "Key file…")
         key_btn.clicked.connect(self._choose_keyfile)
         key_row.addWidget(key_btn)
         self.viewLayout.addLayout(key_row)
@@ -3951,7 +3951,7 @@ class UnlockDialog(MessageBoxBase):
         """Asks Touch ID / Windows Hello, then unlocks with the password kept from earlier."""
         self._show_error("")
         self.yesButton.setEnabled(False)
-        self.yesButton.setText(f"Waiting for {self.verifier.name}â€¦")
+        self.yesButton.setText(f"Waiting for {self.verifier.name}…")
         pending = self.verifier.verify(int(self.window().winId()), "unlock your database")
         self._worker = pending  # blocks a second attempt meanwhile
 
@@ -3975,7 +3975,7 @@ class UnlockDialog(MessageBoxBase):
     def _unlock(self, password, quick=False):
         self._show_error("")
         self.yesButton.setEnabled(False)
-        self.yesButton.setText("Unlockingâ€¦")
+        self.yesButton.setText("Unlocking…")
         result = {}
 
         def work(path=self.path, password=password, keyfile=self.keyfile):
@@ -4278,7 +4278,7 @@ class MainWindow(FluentWindow):
         self.icons.fetch(entries, "Missing icons download" if missing_only else "Icon refresh")
 
     def find_icons_by_name(self):
-        """Settings â†’ Find icons by name: guesses websites for entries that have none (see FindIconsDialog)."""
+        """Settings → Find icons by name: guesses websites for entries that have none (see FindIconsDialog)."""
         db = self.saver.db
         if db is None or not db.writable:
             InfoBar.info("Find site icons", "Unlock an editable database first.", orient=Qt.Horizontal,
@@ -4415,7 +4415,7 @@ class MainWindow(FluentWindow):
             self.idle.arm(True)
             QTimer.singleShot(0, self.vault.focus_search)  # ready to type what you're looking for
             name = Path(dialog.path).name
-            self.setWindowTitle(f"Vault â€” {name}" if db.writable else f"Vault â€” {name} (read-only)")
+            self.setWindowTitle(f"Vault — {name}" if db.writable else f"Vault — {name} (read-only)")
             if not db.writable:
                 InfoBar.warning(
                     "Read-only", f"This database uses the older KDBX {db.version} format, which Vault can "
