@@ -29,6 +29,17 @@ Then choose your database file, type your master password and click **Unlock**.
   colour-coding of letters, digits and symbols.
 - **Username suggestions** from your other entries while you type (wildcards work).
 - **2FA codes (TOTP)** for entries that have them.
+- **Search first:** Vault opens with the cursor in the search box; ↓ or Enter moves to the results,
+  then Ctrl+C copies the password. Ctrl+F returns to search.
+- **History:** right-click → History (Ctrl+H) shows an entry's earlier versions; copy an old password
+  or restore a version (undoable).
+- **Extra fields and attachments** made in KeePass or KeePassXC (PINs, security answers, files) show
+  under the entry, hidden values masked, with copy buttons; attachments can be saved. Entries with
+  attachments show a paperclip, and search looks in field names and values.
+- **New databases and master passwords:** create a database from the unlock screen; change the master
+  password or key file in Settings → Database (a backup that opens with the old password is kept).
+- **Copied passwords stay out of clipboard history** (Windows' Win+V history and cloud clipboard, and
+  clipboard managers on macOS and Linux).
 - **Password health report:** weak, reused, expired and empty passwords, and passwords not changed in
   over a year.
 - **Site icons:** downloaded from each website and saved in the database, so KeePass and KeePassXC

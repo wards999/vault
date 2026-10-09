@@ -2746,6 +2746,116 @@ class HistoryDialog(MessageBoxBase):
         return True
 
 
+def show_strength(bar, label, value):
+    """A password's estimated strength on a bar and label (for master passwords)."""
+    if not value:
+        bar.setValue(0)
+        label.setText("")
+        return
+    bits = generator.estimate_bits(value)
+    text, score, level = generator.strength_label(bits)
+    color = QColor(STRENGTH_COLORS[level])
+    bar.setCustomBarColor(color, color)
+    bar.setValue(max(score, 4))
+    label.setText(f"{text} · ~{int(bits)} bits")
+
+
+def strength_row(dialog):
+    """Adds a strength bar and label to a dialog; returns them."""
+    row = QHBoxLayout()
+    bar = ProgressBar()
+    bar.setRange(0, 100)
+    bar.setFixedWidth(160)
+    row.addWidget(bar)
+    label = caption("")
+    row.addWidget(label, 1)
+    dialog.viewLayout.addLayout(row)
+    return bar, label
+
+
+class NewDatabaseDialog(MessageBoxBase):
+    """Creates a new, empty database: a name, where to keep it, and a master password (twice).
+    Afterwards `path` and `password` hold what to open."""
+
+    def __init__(self, parent, start_dir):
+        super().__init__(parent)
+        self.path, self.password = "", None
+        self.viewLayout.setSpacing(8)
+        self.viewLayout.addWidget(SubtitleLabel("New database"))
+        self.viewLayout.addWidget(caption(
+            "A new, empty KeePass database (KDBX 4) that KeePassXC and KeePass apps open too. Keep it in a "
+            "synced folder such as Google Drive to use it on your other devices."))
+        self.name = LineEdit()
+        self.name.setPlaceholderText("Name, e.g. Passwords")
+        self.name.setText("Passwords")
+        self.viewLayout.addWidget(self.name)
+        place = QHBoxLayout()
+        self.folder = str(start_dir)
+        self.place_label = caption("")
+        place.addWidget(self.place_label, 1)
+        change = PushButton(FIF.FOLDER, "Change…")
+        change.clicked.connect(self._choose_folder)
+        place.addWidget(change)
+        self.viewLayout.addLayout(place)
+        self.name.textChanged.connect(self._update_place)
+        self.new = PasswordLineEdit()
+        self.new.setPlaceholderText("Master password")
+        self.repeat = PasswordLineEdit()
+        self.repeat.setPlaceholderText("Master password again")
+        for line in (self.new, self.repeat):
+            line.setClearButtonEnabled(False)
+            line.returnPressed.connect(self.yesButton.click)
+            self.viewLayout.addWidget(line)
+        self.strength_bar, self.strength_label = strength_row(self)
+        self.new.textChanged.connect(lambda text: show_strength(self.strength_bar, self.strength_label, text))
+        self.viewLayout.addWidget(caption(
+            "Choose a long password you'll remember, e.g. four or five unrelated words. "
+            "It can't be recovered if you forget it."))
+        self.error = caption("")
+        self.error.setStyleSheet("color: #d13438;")
+        self.error.hide()
+        self.viewLayout.addWidget(self.error)
+        self.yesButton.setText("Create")
+        self.cancelButton.setText("Cancel")
+        self.widget.setMinimumWidth(520)
+        self._update_place()
+        QTimer.singleShot(0, lambda: (self.name.setFocus(), self.name.selectAll()))
+
+    def _file(self):
+        name = re.sub(r'[<>:"/\\|?*]', "", self.name.text()).strip() or "Passwords"
+        return Path(self.folder) / f"{name}.kdbx"
+
+    def _update_place(self):
+        self.place_label.setText(f"Saved as {self._file()}")
+
+    def _choose_folder(self):
+        folder = QFileDialog.getExistingDirectory(self, "Where to keep the database", self.folder)
+        if folder:
+            self.folder = folder
+            self._update_place()
+
+    def _fail(self, text, focus):
+        self.error.setText(text)
+        self.error.show()
+        focus.setFocus()
+        return False
+
+    def validate(self):
+        if not self.new.text():
+            return self._fail("Choose a master password.", self.new)
+        if self.new.text() != self.repeat.text():
+            return self._fail("The two passwords don't match.", self.repeat)
+        path = self._file()
+        try:
+            store.create_new_database(path, self.new.text(), self.name.text().strip() or path.stem)
+        except FileExistsError:
+            return self._fail(f"{path.name} already exists there. Choose another name.", self.name)
+        except OSError as exc:
+            return self._fail(f"Couldn't create it: {exc.strerror or exc}", self.name)
+        self.path, self.password = str(path), self.new.text()
+        return True
+
+
 class ChangeMasterDialog(MessageBoxBase):
     """Change the master password and/or key file. Asks for the current password first, the new one
     twice, and shows how strong it is. The result is in `password` / `keyfile`."""
@@ -2771,14 +2881,7 @@ class ChangeMasterDialog(MessageBoxBase):
             self.viewLayout.addWidget(line)
             line.returnPressed.connect(self.yesButton.click)
         self.new.textChanged.connect(self._update_strength)
-        strength = QHBoxLayout()
-        self.strength_bar = ProgressBar()
-        self.strength_bar.setRange(0, 100)
-        self.strength_bar.setFixedWidth(160)
-        strength.addWidget(self.strength_bar)
-        self.strength_label = caption("")
-        strength.addWidget(self.strength_label, 1)
-        self.viewLayout.addLayout(strength)
+        self.strength_bar, self.strength_label = strength_row(self)
 
         keys = QHBoxLayout()
         self.key_label = caption("")
@@ -2813,17 +2916,7 @@ class ChangeMasterDialog(MessageBoxBase):
             self._set_keyfile(path)
 
     def _update_strength(self):
-        value = self.new.text()
-        if not value:
-            self.strength_bar.setValue(0)
-            self.strength_label.setText("")
-            return
-        bits = generator.estimate_bits(value)
-        label, score, level = generator.strength_label(bits)
-        color = QColor(STRENGTH_COLORS[level])
-        self.strength_bar.setCustomBarColor(color, color)
-        self.strength_bar.setValue(max(score, 4))
-        self.strength_label.setText(f"{label} · ~{int(bits)} bits")
+        show_strength(self.strength_bar, self.strength_label, self.new.text())
 
     def _fail(self, text, focus):
         self.error.setText(text)
@@ -3726,6 +3819,10 @@ class UnlockDialog(MessageBoxBase):
         choose = PushButton(FIF.FOLDER, "Choose…")
         choose.clicked.connect(self._choose_file)
         file_row.addWidget(choose)
+        self.new_btn = TransparentPushButton(FIF.ADD, "New…")
+        self.new_btn.setToolTip("Create a new, empty database")
+        self.new_btn.clicked.connect(self._new_database)
+        file_row.addWidget(self.new_btn)
         self.viewLayout.addLayout(file_row)
 
         self.pw = PasswordLineEdit()
@@ -3774,7 +3871,7 @@ class UnlockDialog(MessageBoxBase):
 
     def _set_path(self, path):
         self.path = path
-        self.file_label.setText(Path(path).name if path else "No database chosen")
+        self.file_label.setText(Path(path).name if path else "No database yet: choose one, or make a new one")
         self.file_label.setToolTip(path)
         self._update_button()
 
@@ -3792,6 +3889,16 @@ class UnlockDialog(MessageBoxBase):
         if path:
             self._set_path(path)
             self.pw.setFocus()
+
+    def _new_database(self):
+        """Creates a database, then opens it straight away."""
+        dialog = NewDatabaseDialog(self.window(), self._start_dir(self.path))
+        if dialog.exec() and dialog.path:
+            self._set_path(dialog.path)
+            self._set_keyfile("")
+            self.pw.setText(dialog.password)
+            dialog.password = None
+            self.yesButton.click()
 
     def _choose_keyfile(self):
         path, _ = QFileDialog.getOpenFileName(self, "Choose key file", self._start_dir(self.keyfile or self.path))

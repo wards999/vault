@@ -619,6 +619,23 @@ def make_backup(path, data, directory=None, keep=MAX_BACKUPS):
     return target
 
 
+def create_new_database(path, password, name):
+    """A new, empty KDBX 4.1 database (Argon2), like KeePassXC makes. Never overwrites a file."""
+    from pykeepass import create_database
+    path = Path(path)
+    if path.exists():
+        raise FileExistsError(f"{path.name} already exists.")
+    kp = create_database(str(path.with_name(f".{path.name}.vault-new")), password=password)
+    kp.kdbx.header.value.minor_version = 1
+    kp.root_group.name = name
+    kp.database_name = name
+    buffer = io.BytesIO()
+    kp.save(buffer)
+    Path(kp.filename).unlink(missing_ok=True)
+    with open(path, "xb") as f:  # "x": fails rather than replace a file made meanwhile
+        f.write(buffer.getvalue())
+
+
 def set_credentials(kp, password, keyfile):
     """New master password and/or key file (applied by the next save). Returns the old ones, to undo
     if that save fails. Also records the change date, which KeePass/KeePassXC show."""
