@@ -3546,7 +3546,8 @@ class HealthView(QWidget):
         titles = QVBoxLayout()
         titles.setSpacing(2)
         titles.addWidget(TitleLabel("Password health"))
-        self.subtitle = caption("Entries in the Recycle Bin aren't checked. Double-click an entry to fix it.")
+        self.subtitle = caption("Entries in the Recycle Bin and Backup folders aren't checked. "
+                                "Double-click an entry to fix it.")
         titles.addWidget(self.subtitle)
         head.addLayout(titles, 1)
         refresh = PushButton(FIF.SYNC, "Check again")

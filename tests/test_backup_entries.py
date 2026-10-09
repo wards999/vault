@@ -52,4 +52,12 @@ ok("search: tooltip says it's an old copy", "old copy" in (model.data(model.inde
     next(i for i, e in enumerate(model.entries) if e["password"] == "old-pw"), 0), vault.R_TOOLTIP) or ""))
 v.search.setText(""); v.folder = next(f["id"] for f in db.folders if f["name"] == "Backup"); v.refresh()
 ok("inside the Backup folder: shown normally", looks("old-pw") == (False, False))
+
+import health
+same = dict(by_password["old-pw"], password="live-pw")  # a backup copy with the live entry's password
+issues = health.report(db.entries + [same])
+ok("Password health skips backup copies", not any(i["entry"]["backup"] for i in issues))
+ok("…so the live entry isn't flagged as reused with its old copy",
+   not any(i["issue"] == "reused" and i["entry"]["password"] == "live-pw" for i in issues),
+   [(i["issue"], i["entry"]["title"]) for i in issues])
 finish()

@@ -28,9 +28,10 @@ def _age_text(days):
 
 
 def report(entries, now=None):
-    """List of issue dicts: {issue, entry, detail, sort} for entries outside the Recycle Bin."""
+    """List of issue dicts: {issue, entry, detail, sort} for entries outside the Recycle Bin and
+    Backup folders (old copies there would just show up as "reused" alongside the live entry)."""
     now = now or datetime.now(timezone.utc)
-    live = [e for e in entries if not e["in_bin"]]
+    live = [e for e in entries if not e["in_bin"] and not e["backup"]]
     by_password = defaultdict(list)
     for e in live:
         if e["password"]:
