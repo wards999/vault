@@ -619,6 +619,21 @@ def make_backup(path, data, directory=None, keep=MAX_BACKUPS):
     return target
 
 
+def set_credentials(kp, password, keyfile):
+    """New master password and/or key file (applied by the next save). Returns the old ones, to undo
+    if that save fails. Also records the change date, which KeePass/KeePassXC show."""
+    old = (kp.password, kp.keyfile, kp.credchange_date)
+    kp.password, kp.keyfile = password or None, keyfile or None
+    kp.credchange_date = datetime.now(timezone.utc)
+    return old
+
+
+def restore_credentials(kp, old):
+    kp.password, kp.keyfile = old[0], old[1]
+    if old[2] is not None:
+        kp.credchange_date = old[2]
+
+
 def save_database(kp, path, expected_digest, backup=False, backup_directory=None):
     """Safely writes `kp` to `path`. Raises FileChanged if the file isn't what we expect.
 

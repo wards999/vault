@@ -6,6 +6,7 @@ made by other devices or apps).
 Run:  python vault.py
 """
 import hashlib
+import hmac
 import os
 import re
 from collections import Counter
@@ -2745,6 +2746,107 @@ class HistoryDialog(MessageBoxBase):
         return True
 
 
+class ChangeMasterDialog(MessageBoxBase):
+    """Change the master password and/or key file. Asks for the current password first, the new one
+    twice, and shows how strong it is. The result is in `password` / `keyfile`."""
+
+    def __init__(self, parent, db):
+        super().__init__(parent)
+        self.db = db
+        self.password = None
+        self.keyfile = db.kp.keyfile or ""
+        self.viewLayout.setSpacing(8)
+        self.viewLayout.addWidget(SubtitleLabel("Change master password"))
+        self.viewLayout.addWidget(caption(
+            "This changes what opens this database, everywhere you use it: KeePassXC and your other devices "
+            "will need the new password too. A backup that still opens with the current password is kept."))
+        self.current = PasswordLineEdit()
+        self.current.setPlaceholderText("Current master password")
+        self.new = PasswordLineEdit()
+        self.new.setPlaceholderText("New master password")
+        self.repeat = PasswordLineEdit()
+        self.repeat.setPlaceholderText("New master password again")
+        for line in (self.current, self.new, self.repeat):
+            line.setClearButtonEnabled(False)
+            self.viewLayout.addWidget(line)
+            line.returnPressed.connect(self.yesButton.click)
+        self.new.textChanged.connect(self._update_strength)
+        strength = QHBoxLayout()
+        self.strength_bar = ProgressBar()
+        self.strength_bar.setRange(0, 100)
+        self.strength_bar.setFixedWidth(160)
+        strength.addWidget(self.strength_bar)
+        self.strength_label = caption("")
+        strength.addWidget(self.strength_label, 1)
+        self.viewLayout.addLayout(strength)
+
+        keys = QHBoxLayout()
+        self.key_label = caption("")
+        keys.addWidget(self.key_label, 1)
+        choose = TransparentPushButton(FIF.FOLDER, "Choose key file…")
+        choose.clicked.connect(self._choose_keyfile)
+        keys.addWidget(choose)
+        self.remove_key = TransparentPushButton(FIF.REMOVE, "No key file")
+        self.remove_key.clicked.connect(lambda: self._set_keyfile(""))
+        keys.addWidget(self.remove_key)
+        self.viewLayout.addLayout(keys)
+        self.error = caption("")
+        self.error.setStyleSheet("color: #d13438;")
+        self.error.hide()
+        self.viewLayout.addWidget(self.error)
+        self._set_keyfile(self.keyfile)
+        self._update_strength()
+        self.yesButton.setText("Change password")
+        self.cancelButton.setText("Cancel")
+        self.widget.setMinimumWidth(520)
+        QTimer.singleShot(0, self.current.setFocus)
+
+    def _set_keyfile(self, path):
+        self.keyfile = path
+        self.key_label.setText(f"Key file: {Path(path).name}" if path else "No key file (password only)")
+        self.remove_key.setVisible(bool(path))
+
+    def _choose_keyfile(self):
+        start = str(Path(self.keyfile).parent) if self.keyfile else str(Path(self.db.path).parent)
+        path, _ = QFileDialog.getOpenFileName(self, "Choose key file", start)
+        if path:
+            self._set_keyfile(path)
+
+    def _update_strength(self):
+        value = self.new.text()
+        if not value:
+            self.strength_bar.setValue(0)
+            self.strength_label.setText("")
+            return
+        bits = generator.estimate_bits(value)
+        label, score, level = generator.strength_label(bits)
+        color = QColor(STRENGTH_COLORS[level])
+        self.strength_bar.setCustomBarColor(color, color)
+        self.strength_bar.setValue(max(score, 4))
+        self.strength_label.setText(f"{label} · ~{int(bits)} bits")
+
+    def _fail(self, text, focus):
+        self.error.setText(text)
+        self.error.show()
+        focus.setFocus()
+        focus.selectAll()
+        return False
+
+    def validate(self):
+        if not hmac.compare_digest((self.current.text() or "").encode(), (self.db.kp.password or "").encode()):
+            return self._fail("That isn't the current master password.", self.current)
+        if not self.new.text() and not self.keyfile:
+            return self._fail("Choose a new password (or a key file).", self.new)
+        if self.new.text() != self.repeat.text():
+            return self._fail("The two new passwords don't match.", self.repeat)
+        if self.new.text() == self.current.text() and self.keyfile == (self.db.kp.keyfile or ""):
+            return self._fail("That's the same as the current password.", self.new)
+        if self.keyfile and not Path(self.keyfile).is_file():
+            return self._fail("The key file can't be found.", self.new)
+        self.password = self.new.text()
+        return True
+
+
 class FindIconsDialog(MessageBoxBase):
     """Finds the website and icon for entries that have no website, from their names (see
     sitefinder.py): a grid of guesses to tick or correct. Apply leaves the changes in `ops`."""
@@ -3154,6 +3256,42 @@ class SaveController(QObject):
         else:
             self._saved(db, db.digest, None, False)
 
+    def change_credentials(self, password, keyfile, done):
+        """A new master password / key file. Saved on its own once other edits are saved, always with a
+        backup of the file as it was (which still opens with the old password). If the save fails, the
+        old password stays. Calls done(error or None)."""
+        def start():
+            db = self.db
+            if db is None or self.unsaved:
+                done(RuntimeError("Your other changes couldn't be saved first."))
+                return
+            old = store.set_credentials(db.kp, password, keyfile)
+            self.busy = True
+            self.save_timer.stop()
+            self.status.emit("Saving…")
+            run_in_background(self, lambda: store.save_database(db.kp, db.path, db.digest, backup=True),
+                              lambda new_digest, error: finished(db, old, new_digest, error))
+
+        def finished(db, old, new_digest, error):
+            self.busy = False
+            if error:
+                store.restore_credentials(db.kp, old)
+                if isinstance(error, store.FileChanged):
+                    error = RuntimeError("The database was just changed on another device. "
+                                         "Vault will load those changes; then try again.")
+                    QTimer.singleShot(0, lambda: self.check_external(manual=False))
+            else:
+                db.digest = new_digest
+                self.last_backup = time.time()
+                self.last_stat = self._stat()
+            self.status.emit("All changes saved")
+            queued, self.queued = self.queued, []
+            for batch in queued:
+                self._apply_batch(*batch)
+            done(error)
+
+        self.flush(start)
+
     def flush(self, callback):
         """Calls `callback` once everything is saved (immediately if nothing is pending)."""
         if not self.pending or self.db is None:
@@ -3480,6 +3618,14 @@ class SettingsView(ScrollArea):
         density.currentTextChanged.connect(lambda name: settings.setValue("row_density", name))
         density.currentTextChanged.connect(on_density)
         root.addWidget(self._row("Row density", "How tightly entries are packed in the table.", density))
+
+        root.addSpacing(8)
+        root.addWidget(SubtitleLabel("Database"))
+        change = PushButton(AppIcon("lock"), "Change…")
+        change.clicked.connect(lambda: self.window().change_master_password())
+        root.addWidget(self._row(
+            "Master password", "Change the password (or key file) that opens the open database. A backup that "
+            "opens with the old password is kept.", change))
 
         root.addSpacing(8)
         root.addWidget(SubtitleLabel("Site icons"))
@@ -4067,6 +4213,37 @@ class MainWindow(FluentWindow):
             self._unlock_when_restored = True
             return
         self._show_unlock()
+
+    def change_master_password(self):
+        db = self.saver.db
+        note = lambda title, text: InfoBar.warning(title, text, orient=Qt.Horizontal, isClosable=True,
+                                                   position=InfoBarPosition.TOP_RIGHT, duration=5000, parent=self)
+        if self.locked or db is None:
+            note("Locked", "Unlock the database first.")
+            return
+        if not db.writable:
+            note("Read-only", f"Vault can't change the password of a KDBX {db.version} database.")
+            return
+        dialog = ChangeMasterDialog(self, db)
+        if not dialog.exec():
+            return
+        password, keyfile = dialog.password, dialog.keyfile
+        dialog.password = None
+
+        def done(error):
+            if error:
+                InfoBar.error("Password not changed", str(error), orient=Qt.Vertical, isClosable=True,
+                              position=InfoBarPosition.TOP_RIGHT, duration=-1, parent=self)
+                return
+            if self.quick is not None:
+                self.quick = quickunlock.Sealed(db.path, keyfile, password) if self._quick_unlock_on() else None
+            if Path(setting("last_file", "")) == Path(db.path):
+                settings.setValue("last_keyfile", keyfile)
+            InfoBar.success("Master password changed", "Use the new password from now on, on every device. "
+                            "KeePassXC and your phone will ask for it next time.", orient=Qt.Vertical,
+                            isClosable=True, position=InfoBarPosition.TOP_RIGHT, duration=8000, parent=self)
+
+        self.saver.change_credentials(password, keyfile, done)
 
     def _set_quick_unlock(self, on):
         if not on:
