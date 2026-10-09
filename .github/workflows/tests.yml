@@ -1,0 +1,24 @@
+# Runs Vault's tests (tests/run_all.py) on every push to main, and before every build (build.yml calls this).
+name: Tests
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+  workflow_call:
+
+jobs:
+  tests:
+    runs-on: windows-latest
+    timeout-minutes: 40
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: python -m pip install --quiet -r requirements.txt -r tests/requirements.txt
+      - name: Install KeePassXC (some tests check files the way KeePassXC sees them)
+        run: choco install keepassxc --no-progress -y
+      - name: Run the tests
+        run: python tests/run_all.py

@@ -63,7 +63,12 @@ Then choose your database file, type your master password and click **Unlock**.
 ## Building (maintainer)
 
 - **Windows:** `powershell -ExecutionPolicy Bypass -File build.ps1` builds the portable zip with PyInstaller.
-- **Mac:** `bash build_mac.sh`, which must run on a Mac. GitHub Actions builds both on every push.
+- **Mac:** `bash build_mac.sh`, which must run on a Mac. GitHub Actions builds both for release tags.
+- **Tests:** `python tests/run_all.py` (or `python tests/run_all.py health lock` for some of them). Each
+  test runs in its own process with made-up test databases, temporary settings and backups in a
+  temporary folder; your real settings and databases are never touched. Install the extras with
+  `pip install -r tests/requirements.txt`; KeePassXC is used to cross-check files when it's installed.
+  GitHub Actions runs them on every push to main, and before building a release.
 - **Release:** set `VERSION` in `vault.py`, commit, then push a tag `v<VERSION>` (for example
   `git tag v1.0.5; git push origin main v1.0.5`). GitHub Actions builds both apps and publishes the
   release, and refuses if the tag doesn't match `VERSION`.

@@ -152,7 +152,10 @@ FROZEN = getattr(sys, "frozen", False)  # running as the packaged Vault.exe
 RESOURCE_DIR = Path(getattr(sys, "_MEIPASS", Path(__file__).resolve().parent))  # bundled icons etc.
 
 # The packaged app is portable: settings live in Vault.ini next to Vault.exe, not the registry.
-if FROZEN and sys.platform == "win32":
+# VAULT_SETTINGS (a file path) overrides both; the tests use it so they never touch real settings.
+if os.environ.get("VAULT_SETTINGS"):
+    settings = QSettings(os.environ["VAULT_SETTINGS"], QSettings.IniFormat)
+elif FROZEN and sys.platform == "win32":
     settings = QSettings(str(Path(sys.executable).parent / "Vault.ini"), QSettings.IniFormat)
 else:  # registry when run from source; on macOS ~/Library/Preferences (never inside Vault.app)
     settings = QSettings("Vault", "Vault")

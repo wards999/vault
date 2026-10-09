@@ -1,0 +1,3 @@
+# Extra packages the tests use (on top of ../requirements.txt)
+pyotp
+pywin32; sys_platform == "win32"

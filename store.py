@@ -542,7 +542,9 @@ class FileChanged(Exception):
 def backup_dir():
     """Where backups go: next to Vault.exe for the portable Windows build, in Application Support
     on macOS (never inside Vault.app, which would break its signature), else the project folder."""
-    import sys
+    import os, sys
+    if os.environ.get("VAULT_BACKUPS"):  # the tests keep their backups apart
+        return Path(os.environ["VAULT_BACKUPS"])
     if sys.platform == "darwin":
         return Path.home() / "Library" / "Application Support" / "Vault" / "backups"
     base = Path(sys.executable).parent if getattr(sys, "frozen", False) else Path(__file__).resolve().parent
