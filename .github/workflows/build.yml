@@ -14,12 +14,9 @@ on:
 permissions:
   contents: write  # lets the release job publish releases
 
+# No test run here: the tests already ran (tests.yml) when the release commit was pushed to main.
 jobs:
-  tests:  # nothing is built or released unless these pass
-    uses: ./.github/workflows/tests.yml
-
   windows:
-    needs: tests
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -36,7 +33,6 @@ jobs:
           retention-days: 3  # releases keep their own copies; this keeps storage small
 
   macos:
-    needs: tests
     runs-on: macos-14  # Apple Silicon (M1 and later)
     steps:
       - uses: actions/checkout@v5
