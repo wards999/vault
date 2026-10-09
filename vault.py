@@ -4167,6 +4167,11 @@ class MainWindow(FluentWindow):
         self.navigationInterface.setReturnButtonVisible(False)
         self.navigationInterface.panel.vBoxLayout.setContentsMargins(0, 34, 0, 5)
 
+    def systemTitleBarRect(self, size):
+        """macOS: where the traffic lights go. FluentWindow puts them at the top right, like Windows'
+        buttons; Mac apps have them at the top left (close button 8 px in), level with the title."""
+        return QRect(0, 0, 70, size.height())
+
     # ---- hiding contents when minimised
 
     def minimize_privately(self):
