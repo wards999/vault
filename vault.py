@@ -1186,6 +1186,10 @@ class VaultView(QWidget):
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.verticalHeader().hide()
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
+        # Deferred (once per batch of changes, and never while the window is being torn down)
+        self.gutter_timer = QTimer(self, singleShot=True, interval=0, timeout=self._scroll_gutters)
+        for bar in (self.table.verticalScrollBar(), self.table.horizontalScrollBar()):
+            bar.rangeChanged.connect(lambda *_: self.gutter_timer.start())
         self.set_density(setting("row_density", "Comfortable"))
         self.table.setSortingEnabled(True)
         self.table.sortByColumn(EntryModel.TITLE, Qt.AscendingOrder)
@@ -1572,6 +1576,17 @@ class VaultView(QWidget):
             self._reveal_icon_only = reveal_icon_only
             self._on_reveal(self.reveal.isChecked())
         self.new_btn.setText("" if new_icon_only else "New entry")
+
+    def _scroll_gutters(self, *_):
+        """The UI library's scrollbars float over the rows, so text showed around them: keep a strip
+        free for each scrollbar that's showing (they're 12 px, 1 px in from the edge)."""
+        # Its style sheet sets the table's margins, so this goes there too.
+        t = self.table
+        gutters = (12 if t.verticalScrollBar().maximum() > 0 else 0, 12 if t.horizontalScrollBar().maximum() > 0 else 0)
+        if gutters != getattr(self, "_gutters", None):
+            self._gutters = gutters
+            qss = f"QTableView {{ padding-right: {gutters[0]}px; padding-bottom: {gutters[1]}px; }}"
+            setCustomStyleSheet(t, qss, qss)
 
     def set_density(self, name):
         self._density = name
