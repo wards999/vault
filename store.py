@@ -124,7 +124,7 @@ class Database:
         bin_group = kp.recyclebin_group
         self.bin_id = bin_group.uuid.hex if bin_group is not None else None
         self.name = kp.root_group.name or Path(self.path).stem
-        self.folders = []  # dicts: id, name, parent (None = root), in_bin, path
+        self.folders = []  # dicts: id, name, parent (None = root), in_bin, backup, path
         self.entries = []
         self.custom_icons = {}  # CustomIconUUID (base64 text) -> image bytes
         for ico in kp.tree.getroot().iterfind("Meta/CustomIcons/Icon"):
@@ -143,7 +143,8 @@ class Database:
                 sub_bin = in_bin or sub_id == self.bin_id
                 name = sub.name or "(unnamed)"
                 self.folders.append(dict(id=sub_id, name=name, parent=ids[-1] if ids else None,
-                                         in_bin=sub_bin, path=names + (name,),
+                                         in_bin=sub_bin, backup=is_backup(names + (name,), sub_bin),
+                                         path=names + (name,),
                                          icon=icon_ref(sub, FOLDER_ICON)))
                 walk(sub, ids + (sub_id,), names + (name,), sub_bin)
 
@@ -182,6 +183,12 @@ class Database:
 
 
 _XML_KEYS = {"title": "Title", "username": "UserName", "password": "Password", "url": "URL", "notes": "Notes"}
+
+
+def is_backup(names, in_bin=False):
+    """In a folder called "Backup" (at any level): where KeePass 1, and files converted from it,
+    kept old copies of entries. The Recycle Bin takes precedence."""
+    return not in_bin and any(n.strip().lower() == "backup" for n in names)
 
 
 def entry_snapshot(e, ids, names, in_bin):
@@ -245,7 +252,7 @@ def entry_snapshot(e, ids, names, in_bin):
         created_key=ctime.isoformat() if ctime else "",
         expires=expiry,
         expired=bool(expires and expiry and datetime.now(timezone.utc) > expiry),
-        folder_ids=ids, path=names, in_bin=in_bin, folder_id=ids[-1] if ids else None,
+        folder_ids=ids, path=names, in_bin=in_bin, backup=is_backup(names, in_bin), folder_id=ids[-1] if ids else None,
         icon=(icon_id, el.findtext("CustomIconUUID") or None), folder=" › ".join(names) or "Root",
     )
     # Extra fields (e.g. "PIN", "Security answer") and attached files, as KeePass/KeePassXC make them

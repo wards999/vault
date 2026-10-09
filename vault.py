@@ -459,6 +459,8 @@ class EntryDelegate(TableItemDelegate):
         self.mono.setStyleHint(QFont.TypeWriter)
         self.mono.setPixelSize(14)
         self.font = getFont(13)
+        self.italic = QFont(self.font)  # old copies in a Backup folder
+        self.italic.setItalic(True)
         self._update_text_color()
         qconfig.themeChanged.connect(self._update_text_color)
 
@@ -474,7 +476,7 @@ class EntryDelegate(TableItemDelegate):
     def initStyleOption(self, option, index):
         # Replaces the UI library's version, which builds a new font for every cell painted.
         QStyledItemDelegate.initStyleOption(self, option, index)
-        option.font = self.font
+        option.font = self.italic if self.model.is_dimmed_backup(self.model.entries[index.row()]) else self.font
         color = self.model.data(index, R_FOREGROUND) or self.text_color
         option.palette.setColor(QPalette.Text, color)
         option.palette.setColor(QPalette.HighlightedText, color)
@@ -694,6 +696,11 @@ class EntryModel(QAbstractTableModel):
         self.draggable = False  # rows can be dragged onto folders (editable databases only)
         self.icons = None  # EntryIcons for the open database
         self.sort_column, self.sort_order = self.TITLE, Qt.AscendingOrder
+        # Old copies in a Backup folder are greyed and italic, except while browsing that folder itself
+        self.dim_backups = True
+
+    def is_dimmed_backup(self, e):
+        return self.dim_backups and e["backup"]
 
     def set_entries(self, entries):
         self.beginResetModel()
@@ -778,10 +785,12 @@ class EntryModel(QAbstractTableModel):
                 return None
             return self.icons.get(e) if self.icons else avatar_icon(e["title"])
         if role == R_FOREGROUND:
-            return EXPIRED_COLOR if e["expired"] else None
+            return EXPIRED_COLOR if e["expired"] or self.is_dimmed_backup(e) else None
         if role == R_TOOLTIP:
             if col == 0 and e["expired"]:
                 return "This entry has expired"
+            if col == 0 and self.is_dimmed_backup(e):
+                return f"An old copy, kept in the Backup folder ({e['folder']})"
             if col in (1, 2):
                 return "Double-click to copy and minimise"
             if col == 3 and e["url"]:
@@ -1401,6 +1410,8 @@ class VaultView(QWidget):
             entries = [e for e in self.db.entries if in_folder(e, self.folder)]
             item = self.tree.currentItem()
             self.list_title.setText(item.text(0).rsplit("  (", 1)[0] if item else self.db.name)
+        # Browsing the Backup folder itself: everything there is a backup, so show it normally
+        self.model.dim_backups = bool(q) or not any(f["id"] == self.folder and f["backup"] for f in self.db.folders)
         self.count.setText(f"{len(entries)} entries")
         self.model.set_entries(entries)
         rows = [i for i, e in enumerate(self.model.entries) if e["uuid"] == select_uuid]
@@ -1519,6 +1530,7 @@ class VaultView(QWidget):
         self._list_text = size
         k = size / 100
         self.delegate.font.setPixelSize(round(13 * k))
+        self.delegate.italic.setPixelSize(round(13 * k))
         self.delegate.mono.setPixelSize(round(14 * k))
         self.set_density(self._density)  # row height and icons follow the text
         # The UI library draws folder names in a fixed 13 px font unless an item carries its own.
