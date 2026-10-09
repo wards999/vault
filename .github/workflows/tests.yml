@@ -20,5 +20,7 @@ jobs:
         run: python -m pip install --quiet -r requirements.txt -r tests/requirements.txt
       - name: Install KeePassXC (some tests check files the way KeePassXC sees them)
         run: choco install keepassxc --no-progress -y
+      - name: Use a full-size screen (the default 1024x768 is smaller than Vault's windows)
+        run: Set-DisplayResolution -Width 1920 -Height 1080 -Force
       - name: Run the tests
         run: python tests/run_all.py

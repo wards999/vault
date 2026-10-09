@@ -83,6 +83,13 @@ def need_cli():
     skip("KeePassXC (keepassxc-cli) isn't installed")
 
 
+def need_desktop():
+    """Tests that compare what's really on screen (pixels, the window under the mouse): not on GitHub's
+    test machines, which have no interactive desktop."""
+    if os.environ.get("CI"):
+        skip("compares real screen pixels; runs on a desktop, not on GitHub's test machines")
+
+
 def need_network():
     """Tests that download site icons: only with VAULT_TEST_NETWORK=1."""
     if os.environ.get("VAULT_TEST_NETWORK") != "1":

@@ -4,6 +4,7 @@ Uses window-management calls only (SetWindowPos/ShowWindow), never keyboard or m
 import os, shutil, sys, time
 from pathlib import Path
 import helpers  # repo path; temporary folder, settings and test databases
+helpers.need_desktop()
 from PySide6.QtCore import QSettings
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
