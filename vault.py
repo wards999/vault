@@ -256,6 +256,8 @@ def trim_memory():
     system. Windows: empty the working set (pages come back as soon as they're needed). macOS does
     the equivalent by itself, compressing idle apps' memory."""
     import gc
+    from PySide6.QtGui import QPixmapCache
+    QPixmapCache.clear()  # rebuilt when next drawn; empty, its 30-second clean-up timer stops too
     gc.collect()
     if sys.platform == "win32":
         import ctypes
@@ -924,8 +926,12 @@ class NotesPanel(SimpleCardWidget):
         self.totp_ring.setFixedSize(22, 22)
         self.totp_ring.setStrokeWidth(3)
         self.totp_ring.setTextVisible(False)
+        self.totp_ring.setUseAni(False)  # it moves one step a second; animating each step cost ~4% CPU
         t.addWidget(self.totp_ring)
         self.totp_left = caption("")
+        # Fixed size: changing its text every second then doesn't re-lay out the whole window.
+        self.totp_left.setFixedSize(self.totp_left.fontMetrics().horizontalAdvance("88s") + 6,
+                                    self.totp_left.fontMetrics().height() + 4)
         t.addWidget(self.totp_left)
         copy = TransparentToolButton(FIF.COPY)
         copy.setToolTip(shortcut_text("Copy 2FA code (Ctrl+T)"))
@@ -1023,7 +1029,7 @@ class NotesPanel(SimpleCardWidget):
         self.entry = e
         self._show_extra(e)
         self.totp_box.setVisible(bool(e and e["totp"]))
-        if e and e["totp"]:
+        if e and e["totp"] and not self.window().isMinimized():
             self._tick()
             self.totp_timer.start()
         else:
@@ -1041,6 +1047,14 @@ class NotesPanel(SimpleCardWidget):
             status = "Expired  ·  " + status
         self.modified.setText(status)
         self.notes.setPlainText(e["notes"])
+
+    def pause(self, paused):
+        """Minimised: stop the 2FA countdown (its ring animates every second); restart it on restore."""
+        if paused:
+            self.totp_timer.stop()
+        elif self.entry and self.entry["totp"]:
+            self._tick()
+            self.totp_timer.start()
 
     def _tick(self):
         if not self.entry or not self.entry["totp"]:
@@ -3193,6 +3207,14 @@ class SaveController(QObject):
         self.poll_timer.start()
         self.status.emit("All changes saved" if db.writable else "Read-only")
 
+    def pause(self, paused):
+        """Minimised: stop checking the file every few seconds; check once on restore instead."""
+        if paused:
+            self.poll_timer.stop()
+        elif self.db is not None:
+            self.poll_timer.start()
+            QTimer.singleShot(0, self.check_external)
+
     def detach(self):
         self.save_timer.stop()
         self.retry_timer.stop()
@@ -4149,6 +4171,10 @@ class MainWindow(FluentWindow):
     def changeEvent(self, event):
         super().changeEvent(event)
         if event.type() == QEvent.WindowStateChange:
+            # Minimised (most of the time): nothing ticks. Restored: catch up straight away.
+            self.vault.notes.pause(self.isMinimized())
+            if not self.locked:
+                self.saver.pause(self.isMinimized())
             if self.isMinimized():
                 self.privacy_cover.show_over()  # best effort when minimised by the system (e.g. Cmd+M)
                 QTimer.singleShot(1500, lambda: self.isMinimized() and trim_memory())
