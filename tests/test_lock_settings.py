@@ -63,6 +63,7 @@ def steps():
     ok("choosing 5 hours: timer set to 5 hours", w.idle.timer.interval() == 5 * 3_600_000 and w.idle.timer.isActive(), w.idle.timer.interval())
     combo.setCurrentText("Never")
     ok("choosing Never stops the idle timer", not w.idle.timer.isActive())
+    ok("…and stops watching keyboard and mouse input", not w.idle.watching)
     w._on_idle()
     ok("…and an idle tick doesn't lock", not w.locked)
     combo.setCurrentText("After 5 minutes")
@@ -70,6 +71,7 @@ def steps():
     send(hwnd, systemlock.WM_WTSSESSION_CHANGE, systemlock.WTS_SESSION_LOCK, None)
     yield dialog
     ok("Windows+L (session lock) locks Vault", w.locked and w.vault.db is None)
+    ok("locked: no idle timer and no input watching", not w.idle.timer.isActive() and not w.idle.watching)
     unlock(); yield lambda: not w.locked
     # Sleep
     send(hwnd, systemlock.WM_POWERBROADCAST, systemlock.PBT_APMSUSPEND, None)

@@ -4020,29 +4020,38 @@ class UnlockDialog(MessageBoxBase):
 
 
 class IdleWatcher(QObject):
-    """Calls `on_idle` after a period with no keyboard or mouse input anywhere in the app."""
+    """Calls `on_idle` after a period with no keyboard or mouse input anywhere in the app.
+    Only while armed (unlocked) and set to a time: otherwise there's no timer and no input watching."""
 
     INPUT_EVENTS = {QEvent.KeyPress, QEvent.MouseButtonPress, QEvent.MouseMove, QEvent.Wheel}
 
     def __init__(self, minutes, on_idle):
         super().__init__()
-        self.timer = QTimer(self)
-        self.timer.setSingleShot(True)
-        self.timer.timeout.connect(on_idle)
-        QApplication.instance().installEventFilter(self)
+        self.timer = QTimer(self, singleShot=True, timeout=on_idle)
+        self.armed = self.watching = False
         self.set_minutes(minutes)
 
     def set_minutes(self, minutes):
         """0 = never."""
         self.minutes = minutes
-        if minutes > 0:
-            self.timer.setInterval(minutes * 60_000)
-            self.timer.start()
-        else:
-            self.timer.stop()
+        self.timer.setInterval(max(minutes, 0) * 60_000)
+        self._update()
+
+    def arm(self, armed):
+        """True once unlocked, False when locked: there's nothing to lock until the database is open."""
+        self.armed = armed
+        self._update()
+
+    def _update(self):
+        on = self.armed and self.minutes > 0
+        if on != self.watching:
+            app = QApplication.instance()
+            app.installEventFilter(self) if on else app.removeEventFilter(self)
+            self.watching = on
+        self.timer.start() if on else self.timer.stop()
 
     def eventFilter(self, obj, event):
-        if self.minutes > 0 and event.type() in self.INPUT_EVENTS:
+        if event.type() in self.INPUT_EVENTS:
             self.timer.start()
         return False
 
@@ -4333,6 +4342,7 @@ class MainWindow(FluentWindow):
 
     def _lock_now(self):
         self.locked = True
+        self.idle.arm(False)
         self.saver.detach()
         self.vault.clear()
         QTimer.singleShot(2000, lambda: self.locked and trim_memory())  # the database is gone: give memory back
@@ -4402,7 +4412,7 @@ class MainWindow(FluentWindow):
             self.saver.attach(db)
             self.health.set_db(db)
             self.locked = False
-            self.idle.timer.start()
+            self.idle.arm(True)
             QTimer.singleShot(0, self.vault.focus_search)  # ready to type what you're looking for
             name = Path(dialog.path).name
             self.setWindowTitle(f"Vault — {name}" if db.writable else f"Vault — {name} (read-only)")
