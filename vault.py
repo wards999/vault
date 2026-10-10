@@ -254,8 +254,9 @@ def shortcut_text(text):
 
 def trim_memory():
     """Vault runs all day, mostly minimised or locked: then hand the memory it isn't using back to the
-    system. Windows: empty the working set (pages come back as soon as they're needed). macOS does
-    the equivalent by itself, compressing idle apps' memory."""
+    system. Windows: empty the working set (pages come back as soon as they're needed). macOS:
+    return the memory malloc keeps after it's been freed (e.g. the decrypted database after locking);
+    memory still in use is left alone, and macOS compresses idle apps' memory by itself."""
     import gc
     from PySide6.QtGui import QPixmapCache
     QPixmapCache.clear()  # rebuilt when next drawn; empty, its 30-second clean-up timer stops too
@@ -266,6 +267,15 @@ def trim_memory():
         kernel32.GetCurrentProcess.restype = ctypes.c_void_p
         psapi.EmptyWorkingSet.argtypes = [ctypes.c_void_p]
         psapi.EmptyWorkingSet(kernel32.GetCurrentProcess())
+    elif sys.platform == "darwin":
+        try:
+            import ctypes
+            libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+            libc.malloc_zone_pressure_relief.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+            libc.malloc_zone_pressure_relief.restype = ctypes.c_size_t
+            libc.malloc_zone_pressure_relief(None, 0)  # all malloc zones, as much as they can
+        except (OSError, AttributeError):
+            pass
 
 
 def use_system_ui_font():
