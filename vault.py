@@ -1631,7 +1631,7 @@ class VaultView(QWidget):
                 minimise = setting("minimise_on_copy", True)  # Settings → Minimise after double-click copy
                 self.window().copy_secret(e[field], label, notify=not minimise)
                 if minimise:
-                    self.window().minimize_privately()
+                    self.window().showMinimized()
         elif col == EntryModel.WEBSITE and e["url"]:
             self.open_url()
         else:
@@ -4255,14 +4255,6 @@ class MainWindow(FluentWindow):
         return QRect(0, 0 if self.isFullScreen() else 6, 94, size.height())
 
     # ---- hiding contents when minimised
-
-    def minimize_privately(self):
-        """Covers the window, lets the covered frame reach the screen, then minimises, so the
-        minimise animation / Dock thumbnail / taskbar preview never shows passwords."""
-        self.privacy_cover.show_over()
-        self.repaint()
-        QApplication.processEvents()
-        QTimer.singleShot(self.COVER_DELAY_MS, self.showMinimized)
 
     def changeEvent(self, event):
         super().changeEvent(event)
