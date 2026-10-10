@@ -4219,12 +4219,33 @@ class MainWindow(FluentWindow):
         for button in (bar.minBtn, bar.maxBtn, bar.closeBtn):
             button.hide()
         bar.iconLabel.hide()  # Mac windows don't show an icon in the title bar
+        # A taller title bar, like Finder's and Safari's, via an empty (invisible) toolbar: macOS then
+        # places the traffic lights lower and further in by itself. Moving them by hand instead left
+        # macOS's hover area (which shows ×, −, +) where they had been, so from below the symbols
+        # appeared late.
+        try:
+            import AppKit
+            import objc
+            window = objc.objc_object(c_void_p=int(self.winId())).window()
+            toolbar = AppKit.NSToolbar.alloc().initWithIdentifier_("VaultTitleBar")
+            toolbar.setShowsBaselineSeparator_(False)
+            window.setToolbar_(toolbar)
+            window.setToolbarStyle_(AppKit.NSWindowToolbarStyleUnifiedCompact)
+            self._native_traffic_lights = True
+        except Exception:  # fall back to placing them by hand (systemTitleBarRect)
+            self._native_traffic_lights = False
         # The traffic lights take the top-left 74 px (see systemTitleBarRect; the title bar starts
         # 46 px in) and are centred 20 px down: start the title after them and centre it on their row.
         bar.hBoxLayout.setContentsMargins(46, 0, 0, 8)
         # The sidebar's Back arrow sat where the traffic lights go; Vault doesn't need page history.
         self.navigationInterface.setReturnButtonVisible(False)
         self.navigationInterface.panel.vBoxLayout.setContentsMargins(0, 34, 0, 5)
+
+    def _updateSystemButtonRect(self):
+        """macOS: the UI library moves the traffic lights on every repaint; with the toolbar (see
+        _use_mac_window_controls) macOS places them itself, so leave them be."""
+        if not getattr(self, "_native_traffic_lights", False):
+            super()._updateSystemButtonRect()
 
     def systemTitleBarRect(self, size):
         """macOS: where the traffic lights go. FluentWindow puts them at the top right, like Windows'
