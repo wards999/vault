@@ -793,7 +793,7 @@ class EntryModel(QAbstractTableModel):
             if col == 0 and self.is_dimmed_backup(e):
                 return f"An old copy, kept in the Backup folder ({e['folder']})"
             if col in (1, 2):
-                return "Double-click to copy and minimise"
+                return "Double-click to copy and minimise" if setting("minimise_on_copy", True) else "Double-click to copy"
             if col == 3 and e["url"]:
                 return f"{e['url']}\nDouble-click to open"
         return None
@@ -1618,8 +1618,10 @@ class VaultView(QWidget):
         if col in (EntryModel.USERNAME, EntryModel.PASSWORD):
             field, label = ("username", "Username") if col == EntryModel.USERNAME else ("password", "Password")
             if e[field]:
-                self.window().copy_secret(e[field], label, notify=False)
-                self.window().minimize_privately()
+                minimise = setting("minimise_on_copy", True)  # Settings → Minimise after double-click copy
+                self.window().copy_secret(e[field], label, notify=not minimise)
+                if minimise:
+                    self.window().minimize_privately()
         elif col == EntryModel.WEBSITE and e["url"]:
             self.open_url()
         else:
@@ -3732,6 +3734,9 @@ class SettingsView(ScrollArea):
         root.addWidget(self._row(
             "Clear clipboard after", "How long copied usernames, passwords and 2FA codes stay on the clipboard "
             "before Vault wipes them.", clipboard))
+        root.addWidget(self._row(
+            "Minimise after double-click copy", "Double-clicking a username or password copies it and gets Vault "
+            "out of the way, ready to paste. Off: Vault stays open.", self._bool_switch("minimise_on_copy")))
         idle = ComboBox()
         idle.addItems(list(IDLE_LOCK_CHOICES))
         idle.setCurrentText(next(k for k, v in IDLE_LOCK_CHOICES.items() if v == idle_lock_minutes()))
