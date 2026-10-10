@@ -3,6 +3,7 @@
 import sys
 import helpers  # repo path; temporary folder, settings and test databases
 from helpers import ok, wait, finish
+from PySide6.QtCore import Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -23,6 +24,17 @@ ok("on by default; the tooltip says it minimises", "minimise" in v.model.data(ce
 v._on_double_click(password)
 ok("on: the password is copied", QApplication.clipboard().text() == entry["password"])
 ok("on: Vault minimises", wait(lambda: w.isMinimized(), 5))
+w.showNormal(); QTest.qWaitForWindowExposed(w); QTest.qWait(300)
+
+# The double-click fires on the second press: minimising before the release left the list thinking the
+# button was still down (macOS), so moving the mouse dragged the row's picture around the screen.
+spot = v.table.visualRect(password).center()
+QTest.mousePress(v.table.viewport(), Qt.LeftButton, Qt.NoModifier, spot)
+v._on_double_click(password)
+QTest.qWait(300)
+ok("button still down: not minimised yet", not w.isMinimized(), QApplication.mouseButtons())
+QTest.mouseRelease(v.table.viewport(), Qt.LeftButton, Qt.NoModifier, spot)
+ok("button up: Vault minimises", wait(lambda: w.isMinimized(), 5))
 w.showNormal(); QTest.qWaitForWindowExposed(w); QTest.qWait(300)
 
 vault.settings.setValue("minimise_on_copy", False)

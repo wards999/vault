@@ -1631,11 +1631,20 @@ class VaultView(QWidget):
                 minimise = setting("minimise_on_copy", True)  # Settings → Minimise after double-click copy
                 self.window().copy_secret(e[field], label, notify=not minimise)
                 if minimise:
-                    self.window().showMinimized()
+                    self._minimise_after_release()
         elif col == EntryModel.WEBSITE and e["url"]:
             self.open_url()
         else:
             self.edit_entry()
+
+    def _minimise_after_release(self, tries=50):
+        """Minimises once the double-click's mouse button is back up (or after a second at most).
+        Minimised while it was still down, the list never saw it come up (macOS), so moving the mouse
+        then dragged the row: its picture stuck in the middle of the screen."""
+        if QApplication.mouseButtons() != Qt.NoButton and tries:
+            QTimer.singleShot(20, lambda: self._minimise_after_release(tries - 1))
+        else:
+            self.window().showMinimized()
 
     # ---- editing
 
@@ -4264,7 +4273,9 @@ class MainWindow(FluentWindow):
             if not self.locked:
                 self.saver.pause(self.isMinimized())
             if self.isMinimized():
-                self.privacy_cover.show_over()  # best effort when minimised by the system (e.g. Cmd+M)
+                # Unlocked, no cover: macOS says "minimised" before its animation, which would show it.
+                if self.locked:
+                    self.privacy_cover.show_over()
                 QTimer.singleShot(1500, lambda: self.isMinimized() and trim_memory())
             elif self.privacy_cover.isVisible():
                 if getattr(self, "_unlock_when_restored", False):
@@ -4460,8 +4471,9 @@ class MainWindow(FluentWindow):
         self.switchTo(self.vault)
         if self.isMinimized():
             # Locked while minimised (e.g. after being left alone): stay minimised, and ask for the
-            # password when the window is next opened (see changeEvent).
+            # password when the window is next opened (see changeEvent), covered until then.
             self._unlock_when_restored = True
+            self.privacy_cover.show_over()
             return
         self._show_unlock()
 

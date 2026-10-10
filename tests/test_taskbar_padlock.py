@@ -59,6 +59,7 @@ def steps():
     w.showMinimized(); yield lambda: w.isMinimized()
     QTimer.singleShot(0, w._on_idle); yield lambda: w.locked  # the idle lock, while minimised
     ok("locked while minimised: padlock pictures back on", calls[-1] is True, calls)
+    ok("…and the padlock cover is up, ready for when it's restored", w.privacy_cover.isVisible())
 
 
 def run(gen):
