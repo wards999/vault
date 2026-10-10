@@ -37,6 +37,24 @@ PYTHON=${PYTHON:-$( [ -x .venv/bin/python ] && echo .venv/bin/python || echo pyt
     --distpath dist \
     --workpath build
 
+# Qt parts Vault doesn't use (~8 MB zipped), dragged in by two plugins: the PDF image format (QtPdf)
+# and the on-screen keyboard for touchscreens (QtVirtualKeyboard, which needs Qt Quick and QML).
+APP=dist/Vault.app/Contents
+QT=$APP/Frameworks/PySide6/Qt
+rm -f "$QT/plugins/imageformats/libqpdf.dylib" "$QT/plugins/platforminputcontexts/libqtvirtualkeyboardplugin.dylib"
+for fw in QtPdf QtQuick QtQml QtQmlModels QtQmlMeta QtQmlWorkerScript QtVirtualKeyboard QtVirtualKeyboardQml; do
+    rm -rf "$QT/lib/$fw.framework" "$APP/Frameworks/$fw" "$APP/Resources/$fw"
+done
+# Nothing left may link to them, or Vault wouldn't start: stop the build instead.
+still=$(find "$APP" -type f \( -name "*.dylib" -o -name "*.so" -o -perm -u+x \) -exec otool -L {} + 2>/dev/null \
+        | grep -E "^[[:space:]].*Qt(Pdf|Quick|Qml|VirtualKeyboard)" || true)
+if [ -n "$still" ]; then
+    echo "Removed Qt parts are still needed by:"; echo "$still"; exit 1
+fi
+# Removing files invalidated the app's signature: sign it again (ad hoc, as PyInstaller did).
+codesign --force --deep --sign - dist/Vault.app
+codesign --verify --deep --strict dist/Vault.app && echo "Signature: OK"
+
 # ditto keeps the app bundle's symlinks and signature intact (plain zip can break them).
 rm -f dist/Vault-mac.zip
 ditto -c -k --sequesterRsrc --keepParent dist/Vault.app dist/Vault-mac.zip
