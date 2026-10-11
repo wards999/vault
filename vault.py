@@ -27,7 +27,7 @@ from PySide6.QtGui import (
     QPainter, QPalette, QPen, QPixmap, QShortcut, QTextCharFormat,
 )
 from PySide6.QtWidgets import (
-    QApplication, QWidget, QHBoxLayout, QVBoxLayout, QTreeWidgetItem, QTreeWidgetItemIterator,
+    QApplication, QAbstractButton, QWidget, QHBoxLayout, QVBoxLayout, QTreeWidgetItem, QTreeWidgetItemIterator,
     QFileDialog, QHeaderView, QAbstractItemView, QSplitter, QSplitterHandle, QLineEdit, QTableWidgetItem,
     QStyledItemDelegate, QDialog, QGraphicsDropShadowEffect, QSizePolicy, QGridLayout, QButtonGroup,
 )
@@ -4167,6 +4167,10 @@ class MainWindow(FluentWindow):
         if sys.platform == "darwin":
             self._use_mac_window_controls()
         self.stackedWidget.setAnimationEnabled(False)  # switch pages instantly (no 0.25 s slide)
+        # Clicking minimise gave it the keyboard focus, so after restoring, typing went nowhere
+        # (not into the password box, search or list): the title bar's buttons never take it.
+        for button in self.titleBar.findChildren(QAbstractButton):
+            button.setFocusPolicy(Qt.NoFocus)
         self.privacy_cover = PrivacyCover(self)
         self.setWindowTitle("Vault")
         self.resize(1360, 800)

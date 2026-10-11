@@ -4,7 +4,7 @@ runs its own event loop)."""
 import os, shutil, sys, time
 from pathlib import Path
 import helpers  # repo path; temporary folder, settings and test databases
-from PySide6.QtCore import QSettings, QTimer
+from PySide6.QtCore import QSettings, QTimer, Qt
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication
 
@@ -38,7 +38,10 @@ dialog = lambda: next((d for d in w.findChildren(vault.UnlockDialog) if d.isVisi
 
 def steps():
     QTimer.singleShot(0, w.lock); yield dialog
-    d = dialog(); d.pw.setText(PW); d.yesButton.click()
+    d = dialog()
+    ok("unlock screen: the password box has the keyboard focus", QApplication.focusWidget() is d.pw,
+       (QApplication.focusWidget(), QApplication.activeWindow()))
+    d.pw.setText(PW); d.yesButton.click()
     yield lambda: not w.locked
     ok("unlocked", not w.locked)
     w.showMinimized()
@@ -52,12 +55,24 @@ def steps():
     w.showNormal()
     yield dialog
     ok("opening the window again shows the unlock screen", dialog() is not None and not w.isMinimized())
-    d = dialog(); d.pw.setText(PW); d.yesButton.click()
+    QTest.qWait(300)
+    d = dialog()
+    ok("…ready to type the password (it has the keyboard focus)", QApplication.focusWidget() is d.pw,
+       (QApplication.focusWidget(), QApplication.activeWindow(), d.pw.hasFocus()))
+    d.pw.setText(PW); d.yesButton.click()
     yield lambda: not w.locked
     ok("unlocks normally", not w.locked and w.vault.db is not None)
     QTimer.singleShot(0, w._on_idle)  # idle lock while the window is open: unlock screen straight away
     yield dialog
     ok("idle lock with the window open: unlock screen shown as before", dialog() is not None)
+    # Minimised with the title bar's button, then restored: the focus used to stay on that button
+    QTest.mouseClick(w.titleBar.minBtn, Qt.LeftButton)
+    yield lambda: w.isMinimized()
+    w.showNormal()
+    yield lambda: not w.isMinimized()
+    QTest.qWait(300)
+    ok("minimise button, then restored: still ready to type the password",
+       QApplication.focusWidget() is dialog().pw, QApplication.focusWidget())
 
 
 def run(gen):
