@@ -36,7 +36,7 @@ v.table.selectRow(0); QTest.qWait(200)
 
 
 def sizes():
-    return dict(table=v.delegate.font.pixelSize(), mono=v.delegate.mono.pixelSize(), tree=(v.tree.topLevelItem(0).data(0, Qt.FontRole) or vault.getFont(13)).pixelSize(), tree_row=v.tree.visualItemRect(v.tree.topLevelItem(0)).height(),
+    return dict(table=v.delegate.font.pixelSize(), small=v.delegate.small.pixelSize(), tile=v.delegate.tile, tree=(v.tree.topLevelItem(0).data(0, Qt.FontRole) or vault.getFont(13)).pixelSize(), tree_row=v.tree.visualItemRect(v.tree.topLevelItem(0)).height(),
                 notes=v.notes.notes.fontInfo().pixelSize(), row=v.table.verticalHeader().defaultSectionSize(),
                 setting=w.settings_view.list_text.currentText())
 
@@ -47,8 +47,9 @@ ok("starts at 100%", normal["setting"] == "100%" and v._list_text == 100)
 v.set_list_text_size(125); QTest.qWait(200)
 big = sizes()
 print("      125%:  ", big, flush=True)
-ok("125%: entry text, passwords, folders and notes all bigger",
-   big["table"] > normal["table"] and big["mono"] > normal["mono"] and big["tree"] > normal["tree"] and big["notes"] > normal["notes"])
+ok("125%: entry titles, usernames, icons, folders and notes all bigger",
+   big["table"] > normal["table"] and big["small"] > normal["small"] and big["tile"] > normal["tile"]
+   and big["tree"] > normal["tree"] and big["notes"] > normal["notes"], (normal, big))
 ok("125%: folder rows taller too", big["tree_row"] > normal["tree_row"], (normal["tree_row"], big["tree_row"]))
 ok("125%: rows taller so text isn't clipped", big["row"] > normal["row"])
 ok("Settings shows 125%", big["setting"] == "125%")

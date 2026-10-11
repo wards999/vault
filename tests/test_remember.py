@@ -43,22 +43,15 @@ print(ok(w.isMaximized()), "maximised window comes back maximised")
 w.showNormal()
 QTest.qWait(200)
 
-# 2. sorting + column widths + order
-v = w.vault
-v.table.sortByColumn(vault.EntryModel.MODIFIED, Qt.DescendingOrder)
-v.table.setColumnWidth(vault.EntryModel.USERNAME, 310)
-v.table.horizontalHeader().moveSection(vault.EntryModel.FOLDER, 1)
-QTest.qWait(700)  # header changes are saved after a short pause
+# 2. the list's order (Sort menu)
+w.vault.sort_by(vault.EntryModel.MODIFIED, Qt.DescendingOrder)  # "Recently changed"
 w.close()
 w = window()
-h = w.vault.table.horizontalHeader()
-print(ok(h.sortIndicatorSection() == vault.EntryModel.MODIFIED and h.sortIndicatorOrder() == Qt.DescendingOrder),
-      "sort column + direction restored (Modified, descending)")
-keys = [e["modified_key"] for e in w.vault.model.entries]
+m = w.vault.model
+print(ok((m.sort_column, m.sort_order) == (vault.EntryModel.MODIFIED, Qt.DescendingOrder)),
+      "sort order restored (Recently changed)")
+keys = [e["modified_key"] for e in m.entries]
 print(ok(keys == sorted(keys, reverse=True)), "rows are actually sorted newest first")
-print(ok(w.vault.table.columnWidth(vault.EntryModel.USERNAME) == 310), "Username width restored:",
-      w.vault.table.columnWidth(vault.EntryModel.USERNAME))
-print(ok(h.visualIndex(vault.EntryModel.FOLDER) == 1), "moved Folder column stays second")
 
 # 3. clipboard timing
 settings_view = w.stackedWidget.widget(w.stackedWidget.count() - 1)

@@ -185,6 +185,19 @@ class Database:
 _XML_KEYS = {"title": "Title", "username": "UserName", "password": "Password", "url": "URL", "notes": "Notes"}
 
 
+FAVOURITE_TAG = "Favourite"  # a KeePass tag, so other apps (KeePassXC) show and keep it
+_FAVOURITE_TAGS = {"favourite", "favorite"}  # either spelling counts
+
+
+def split_tags(text):
+    """KeePass keeps an entry's tags as one string, separated by ; (or , in older files)."""
+    return [t.strip() for t in (text or "").replace(",", ";").split(";") if t.strip()]
+
+
+def is_favourite(tags):
+    return any(t.lower() in _FAVOURITE_TAGS for t in tags)
+
+
 def is_backup(names, in_bin=False):
     """In a folder called "Backup" (at any level): where KeePass 1, and files converted from it,
     kept old copies of entries. The Recycle Bin takes precedence."""
@@ -265,6 +278,8 @@ def entry_snapshot(e, ids, names, in_bin):
         extra.append((key, value.text or "" if value is not None else "",
                       value is not None and value.get("Protected") == "True"))
     entry["fields"] = extra  # [(name, value, hidden)]
+    entry["tags"] = split_tags(el.findtext("Tags"))
+    entry["favourite"] = is_favourite(entry["tags"])
     files = []
     for b in el.findall("Binary"):
         ref = b.find("Value")
@@ -292,7 +307,8 @@ class Op:
     """One change to the database.
 
     Entries:  "create", "update", "trash" (to the Recycle Bin), "delete" (permanent),
-              "move" (to `folder`), "insert" (restore/duplicate from `element`), "set_icon".
+              "move" (to `folder`), "insert" (restore/duplicate from `element`), "set_icon",
+              "favourite" (fields={"on": True/False}: adds or removes the Favourite tag).
     Folders:  "folder_create", "folder_rename", "folder_trash", "folder_delete",
               "folder_move" (to parent `folder`), "folder_insert", "folder_icon".
     """
@@ -440,7 +456,7 @@ def apply_op(kp, op, force=False):
         return None
 
     if entry is None:
-        return None if kind in ("trash", "delete", "move", "set_icon") else Conflict(op, "deleted")
+        return None if kind in ("trash", "delete", "move", "set_icon", "favourite") else Conflict(op, "deleted")
 
     if kind == "update":
         if not force and op.base_mtime is not None and entry.mtime != op.base_mtime:
@@ -467,6 +483,12 @@ def apply_op(kp, op, force=False):
             kp.move_entry(entry, target)
     elif kind == "set_icon":
         _apply_icon(kp, entry, op)
+    elif kind == "favourite":
+        tags = [t for t in split_tags(entry._element.findtext("Tags")) if not is_favourite([t])]
+        if op.fields.get("on"):
+            tags.append(FAVOURITE_TAG)
+        entry.tags = tags
+        entry.touch(modify=True)  # so merging with other devices' copies keeps the newer choice
     return None
 
 
@@ -556,6 +578,9 @@ def inverse_op(kp, op):
         return Op("move", op.uuid, folder=folder, title=op.title)
     if kind == "delete":
         return Op("insert", op.uuid, folder=folder, title=op.title, element=etree.tostring(entry._element))
+    if kind == "favourite":
+        return Op("favourite", op.uuid, fields={"on": is_favourite(split_tags(entry._element.findtext("Tags")))},
+                  title=op.title)
     if kind == "set_icon":
         icon_id, custom = icon_ref(entry, 0)
         return Op("set_icon", op.uuid, icon=custom or "", icon_id=icon_id if op.icon_id is not None else None,

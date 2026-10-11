@@ -7,6 +7,7 @@ Run:  python vault.py
 """
 import hashlib
 import hmac
+import math
 import os
 import re
 from collections import Counter
@@ -20,16 +21,17 @@ from pathlib import Path
 
 from PySide6.QtCore import (
     Qt, QAbstractTableModel, QEvent, QModelIndex, QObject, QRect, QSettings, QSize,
-    QTimer, QUrl, Signal, QMimeData, QByteArray, QPoint,
+    QTimer, QUrl, Signal, QMimeData, QByteArray, QPoint, QPointF, QRectF,
 )
 from PySide6.QtGui import (
-    QColor, QDesktopServices, QFont, QFontDatabase, QIcon, QImage, QInputMethodEvent, QKeySequence,
-    QPainter, QPalette, QPen, QPixmap, QShortcut, QTextCharFormat,
+    QColor, QCursor, QDesktopServices, QFont, QFontDatabase, QFontInfo, QFontMetrics, QIcon, QImage, QInputMethodEvent,
+    QKeySequence, QPainter, QPainterPath, QPalette, QPen, QPixmap, QShortcut, QTextCharFormat,
 )
 from PySide6.QtWidgets import (
-    QApplication, QAbstractButton, QWidget, QHBoxLayout, QVBoxLayout, QTreeWidgetItem, QTreeWidgetItemIterator,
+    QApplication, QAbstractButton, QLabel, QWidget, QHBoxLayout, QVBoxLayout, QTreeWidgetItem, QTreeWidgetItemIterator,
     QFileDialog, QHeaderView, QAbstractItemView, QSplitter, QSplitterHandle, QLineEdit, QTableWidgetItem,
     QStyledItemDelegate, QDialog, QGraphicsDropShadowEffect, QSizePolicy, QGridLayout, QButtonGroup,
+    QStyle, QStyleOptionViewItem,
 )
 from qfluentwidgets import (
     FluentWindow, NavigationItemPosition, FluentIcon as FIF, setTheme, Theme,
@@ -90,7 +92,7 @@ def idle_lock_minutes():
     return minutes if minutes in IDLE_LOCK_CHOICES.values() else 5
 CLIPBOARD_CHOICES = {"Never": 0, "10 seconds": 10, "20 seconds": 20, "30 seconds": 30,
                      "1 minute": 60, "2 minutes": 120, "5 minutes": 300}
-ROW_DENSITIES = {"Compact": (24, 14), "Comfortable": (40, 22), "Spacious": (52, 26)}  # row height, icon size
+CARD_DENSITIES = {"Compact": (46, 28), "Comfortable": (58, 34), "Spacious": (68, 40)}  # card height, icon size
 FOLDER_ROW_HEIGHTS = {"Compact": 22, "Comfortable": 33, "Spacious": 42}  # the folder tree's rows, per density
 AVATAR_COLORS = ["#0f6cbd", "#c239b3", "#038387", "#ca5010", "#8764b8", "#498205", "#d13438", "#4f6bed"]
 
@@ -353,10 +355,17 @@ class AppIcon(FluentIconBase):
 
 # ---------------------------------------------------------------- database
 
+FAVOURITES = "*favourites"  # the sidebar's Favourites row (real folder ids are hex UUIDs)
+FOLDERS_HEADING = "*heading"  # the sidebar's "Folders" heading row
+
+
 def in_folder(entry, folder_id):
-    """True if the entry is in the folder or any of its subfolders (None is the root)."""
+    """True if the entry is in the folder or any of its subfolders (None is the root: everything
+    outside the Recycle Bin; FAVOURITES: the starred entries)."""
     if folder_id is None:
         return not entry["in_bin"]
+    if folder_id == FAVOURITES:
+        return entry["favourite"] and not entry["in_bin"]
     return folder_id in entry["folder_ids"]
 
 
@@ -402,11 +411,15 @@ class EntryIcons:
         self.cache = {}
 
     def get(self, entry):
+        return self.own(entry) or avatar_icon(entry["title"])
+
+    def own(self, entry):
+        """The entry's own icon (the site's, or a KeePass icon chosen for it), or None."""
         icon_id, custom = entry["icon"]
         key = custom or icon_id
         if key not in self.cache:
             self.cache[key] = self._custom(custom) or self._standard(icon_id)
-        return self.cache[key] or avatar_icon(entry["title"])
+        return self.cache[key]
 
     def _custom(self, uuid):
         data = self.db.custom_icons.get(uuid) if uuid else None
@@ -430,6 +443,52 @@ class EntryIcons:
             return None
         match = next(STANDARD_ICON_DIR.glob(f"C{icon_id:02d}_*.svg"), None)
         return QIcon(str(match)) if match else None
+
+
+TILE_COLORS = (QColor("#eceff1"), QColor("#2e3338"))  # behind a site's own icon (light, dark)
+
+
+def draw_entry_tile(painter, rect, entry, icons):
+    """An entry's icon as a rounded tile: the site's own icon on a soft grey tile, or else the
+    title's first letter on a colour (the same colour every time for the same title)."""
+    own = icons.own(entry) if icons else None
+    radius = rect.width() / 4.2
+    painter.save()
+    painter.setRenderHint(QPainter.Antialiasing)
+    painter.setRenderHint(QPainter.SmoothPixmapTransform)
+    painter.setPen(Qt.NoPen)
+    if own:
+        painter.setBrush(TILE_COLORS[isDarkTheme()])
+        painter.drawRoundedRect(rect, radius, radius)
+        s = round(rect.width() * 0.6)
+        own.paint(painter, QRect(rect.x() + (rect.width() - s) // 2, rect.y() + (rect.height() - s) // 2, s, s))
+    else:
+        title = entry["title"]
+        painter.setBrush(QColor(AVATAR_COLORS[sum(map(ord, title)) % len(AVATAR_COLORS)]))
+        painter.drawRoundedRect(rect, radius, radius)
+        font = getFont(13, QFont.DemiBold)
+        font.setPixelSize(max(8, round(rect.height() * 0.44)))
+        painter.setFont(font)
+        painter.setPen(Qt.white)
+        painter.drawText(rect, Qt.AlignCenter, title[:1].upper())
+    painter.restore()
+
+
+def star_path(rect):
+    """A five-pointed star filling `rect` (for favourites)."""
+    cx, cy = rect.center().x(), rect.center().y() + rect.height() * 0.04
+    outer, inner = rect.width() / 2, rect.width() / 2 * 0.45
+    path = QPainterPath()
+    for i in range(10):
+        r = outer if i % 2 == 0 else inner
+        a = math.radians(-90 + i * 36)
+        point = QPointF(cx + r * math.cos(a), cy + r * math.sin(a))
+        path.moveTo(point) if i == 0 else path.lineTo(point)
+    path.closeSubpath()
+    return path
+
+
+STAR_COLOR = QColor("#d29200")
 
 
 PASSWORD_COLORS = {  # (light theme, dark theme); lowercase uses the normal text colour
@@ -458,78 +517,84 @@ EXPIRED_COLOR = QColor("#a0a0a0")
 
 
 class EntryDelegate(TableItemDelegate):
-    """Draws revealed passwords in a monospaced font, colour-coded by character type."""
-
-    PADDING = 20
+    """Draws each entry as a card: its icon, the title with the username underneath, and a star
+    (favourites) and paperclip (attached files) on the right."""
 
     def __init__(self, view, model):
         super().__init__(view)
         self.model = model
-        self.colorize = setting("color_passwords", True)
-        self.mono = QFont(MONO_FAMILY)
-        self.mono.setStyleHint(QFont.TypeWriter)
-        self.mono.setPixelSize(14)
-        self.font = getFont(13)
+        self.colorize = setting("color_passwords", True)  # for the details pane's password
+        self.font = getFont(14, QFont.DemiBold)
+        self.small = getFont(13)
         self.italic = QFont(self.font)  # old copies in a Backup folder
         self.italic.setItalic(True)
+        self.tile = 34
         self._update_text_color()
         qconfig.themeChanged.connect(self._update_text_color)
 
     def _update_text_color(self):
-        self.text_color = QColor(Qt.white if isDarkTheme() else Qt.black)
-
-    def _is_revealed_password(self, index):
-        if index.column() != 2:  # EntryModel.PASSWORD
-            return False
-        e = self.model.entries[index.row()]
-        return bool(e["password"] and self.model.is_revealed(e))
-
-    def initStyleOption(self, option, index):
-        # Replaces the UI library's version, which builds a new font for every cell painted.
-        QStyledItemDelegate.initStyleOption(self, option, index)
-        option.font = self.italic if self.model.is_dimmed_backup(self.model.entries[index.row()]) else self.font
-        color = self.model.data(index, R_FOREGROUND) or self.text_color
-        option.palette.setColor(QPalette.Text, color)
-        option.palette.setColor(QPalette.HighlightedText, color)
-        if self._is_revealed_password(index):
-            option.text = ""  # drawn by paint() instead
+        dark = isDarkTheme()
+        self.text_color = QColor(Qt.white if dark else Qt.black)
+        self.muted = QColor("#a3a9af" if dark else "#5c656d")
 
     ATTACH = AppIcon("attach")
 
+    def title_style(self, e):
+        """The title's (font, colour): grey when expired, and grey and italic for old copies in a Backup folder."""
+        backup = self.model.is_dimmed_backup(e)
+        return (self.italic if backup else self.font), (EXPIRED_COLOR if e["expired"] or backup else self.text_color)
+
     def paint(self, painter, option, index):
-        super().paint(painter, option, index)
-        if index.column() == 0 and self.model.entries[index.row()]["attachments"]:  # paperclip: has attachments
-            r, s = option.rect, 14
-            painter.save()
-            painter.setOpacity(0.6)
-            self.ATTACH.render(painter, QRect(r.right() - s - 8, r.center().y() - s // 2 + 1, s, s))
-            painter.restore()
-        if not self._is_revealed_password(index):
-            return
-        password = self.model.data(index, Qt.UserRole)["password"]
+        e = self.model.entries[index.row()]
+        r = option.rect.adjusted(6, 2, -8, -2)
         dark = isDarkTheme()
-        normal = QColor(PASSWORD_PLAIN[dark] if self.colorize else (Qt.white if dark else Qt.black))
         painter.save()
-        painter.setFont(self.mono)
-        fm = painter.fontMetrics()
-        bold = QFont(self.mono)  # coloured characters are semi-bold too (same widths: monospaced)
-        bold.setWeight(QFont.DemiBold)
-        r = option.rect
-        x, right = r.x() + self.PADDING, r.right() - 6
-        baseline = r.y() + (r.height() + fm.ascent() - fm.descent()) // 2
-        ellipsis_w = fm.horizontalAdvance("…")
-        for i, ch in enumerate(password):
-            w = fm.horizontalAdvance(ch)
-            if x + w > right - (ellipsis_w if i < len(password) - 1 else 0):
-                painter.setPen(normal)
-                painter.drawText(x, baseline, "…")
-                break
-            kind = char_kind(ch) if self.colorize else "lower"
-            coloured = kind in PASSWORD_COLORS
-            painter.setPen(QColor(PASSWORD_COLORS[kind][dark]) if coloured else normal)
-            painter.setFont(bold if coloured else self.mono)
-            painter.drawText(x, baseline, ch)
-            x += w
+        painter.setRenderHint(QPainter.Antialiasing)
+        painter.setPen(Qt.NoPen)
+        selected = index.row() in self.selectedRows
+        if selected:
+            fill = QColor(themeColor())
+            fill.setAlpha(52 if dark else 36)
+        elif index.row() in (self.hoverRow, self.pressedRow):
+            fill = QColor(255, 255, 255, 14) if dark else QColor(0, 0, 0, 11)
+        else:
+            fill = None
+        if fill is not None:
+            painter.setBrush(fill)
+            painter.drawRoundedRect(r, 8, 8)
+        if selected:  # the accent bar the UI library's lists show by the selected row
+            painter.setBrush(QColor(themeColor()))
+            painter.drawRoundedRect(QRectF(r.x() + 1, r.y() + r.height() * 0.3, 3, r.height() * 0.4), 1.5, 1.5)
+
+        tile = QRect(r.x() + 12, r.center().y() - self.tile // 2 + 1, self.tile, self.tile)
+        draw_entry_tile(painter, tile, e, self.model.icons)
+        x, right = tile.right() + 13, r.right() - 10
+        if e["favourite"]:
+            s = 14
+            painter.setBrush(STAR_COLOR)
+            painter.drawPath(star_path(QRectF(right - s, r.center().y() - s / 2, s, s)))
+            right -= s + 8
+        if e["attachments"]:
+            s = 14
+            painter.setOpacity(0.6)
+            self.ATTACH.render(painter, QRect(right - s, r.center().y() - s // 2, s, s))
+            painter.setOpacity(1)
+            right -= s + 8
+
+        title_font, title_color = self.title_style(e)
+        fm1, fm2 = QFontMetrics(title_font), QFontMetrics(self.small)
+        width = max(0, right - x)
+        lines = fm1.height() + (2 + fm2.height() if e["username"] else 0)
+        y = r.y() + (r.height() - lines) // 2
+        painter.setFont(title_font)
+        painter.setPen(title_color)
+        painter.drawText(QRect(x, y, width, fm1.height()), Qt.AlignLeft | Qt.AlignVCenter,
+                         fm1.elidedText(e["title"], Qt.ElideRight, width))
+        if e["username"]:
+            painter.setFont(self.small)
+            painter.setPen(self.muted)
+            painter.drawText(QRect(x, y + fm1.height() + 2, width, fm2.height()), Qt.AlignLeft | Qt.AlignVCenter,
+                             fm2.elidedText(e["username"], Qt.ElideRight, width))
         painter.restore()
 
 
@@ -538,18 +603,70 @@ FOLDER_MIME = "application/x-vault-folder"
 
 
 class FolderRowDelegate(TreeItemDelegate):
-    """The UI library's folder row drawing, with the row height set by the row density (only the
-    height: the width stays what the text needs, so the panel can fit the widest folder)."""
+    """The sidebar's rows (All entries, Favourites, the folders): the UI library's drawing, with each
+    row's entry count small and grey on the right, the "Folders" heading (with a + for a new folder),
+    and the row height set by the row density."""
 
     def __init__(self, tree):
         super().__init__(tree)
         self.row_height = None
+        self.inactive = False  # Password health or Settings showing: no row looks selected
 
     def sizeHint(self, option, index):
-        size = super().sizeHint(option, index)
+        size = super().sizeHint(option, index)  # the name and icon...
+        count = self.split(index.data(Qt.DisplayRole))[1]
+        if count:  # ...and the count beside it
+            size.setWidth(size.width() + QFontMetrics(self._count_font(index, option)).horizontalAdvance(count) + 26)
         if self.row_height:
             size.setHeight(self.row_height)
         return size
+
+    @staticmethod
+    def split(text):
+        """("Work", "12") from the row's text "Work  (12)"."""
+        name, sep, count = (text or "").rpartition("  (")
+        return (name, count.rstrip(")")) if sep else (text or "", "")
+
+    def _count_font(self, index, option):
+        font = QFont(index.data(Qt.FontRole) or option.font)
+        font.setPixelSize(max(9, round(QFontInfo(font).pixelSize() * 0.86)))
+        return font
+
+    def initStyleOption(self, option, index):
+        super().initStyleOption(option, index)
+        name, count = self.split(option.text)
+        option.text = name
+        if option.rect.width() > 0:  # drawing (not measuring): shortened (…) before the count, not under it
+            room = (option.rect.width() - option.decorationSize.width() - 20
+                    - (QFontMetrics(self._count_font(index, option)).horizontalAdvance(count) + 14 if count else 0))
+            option.text = QFontMetrics(option.font).elidedText(name, Qt.ElideRight, max(20, room))
+
+    def paint(self, painter, option, index):
+        muted = QColor("#a3a9af" if isDarkTheme() else "#5c656d")
+        if index.data(Qt.UserRole) == FOLDERS_HEADING:
+            painter.save()
+            font = self._count_font(index, option)
+            font.setWeight(QFont.DemiBold)
+            painter.setFont(font)
+            painter.setPen(muted)
+            rect = option.rect.adjusted(4, 0, -12, -3)
+            painter.drawText(rect, Qt.AlignLeft | Qt.AlignBottom, "Folders")
+            if index.data(Qt.UserRole + 4):  # editable: + for a new folder
+                s = 14
+                FIF.ADD.render(painter, QRect(rect.right() - s, rect.bottom() - s, s, s))
+            painter.restore()
+            return
+        if self.inactive:
+            option = QStyleOptionViewItem(option)
+            option.state &= ~QStyle.State_Selected
+        super().paint(painter, option, index)
+        count = self.split(index.data(Qt.DisplayRole))[1]
+        if count:
+            painter.save()
+            painter.setFont(self._count_font(index, option))
+            painter.setPen(muted)
+            painter.drawText(option.rect.adjusted(0, 0, -12, 0), Qt.AlignRight | Qt.AlignVCenter, count)
+            painter.restore()
 
 
 class FolderTree(TreeWidget):
@@ -590,6 +707,10 @@ class FolderTree(TreeWidget):
         if item is None:
             return None
         target = item.data(0, Qt.UserRole)
+        if target == FOLDERS_HEADING:
+            return None
+        if target == FAVOURITES:  # entries dropped there are starred
+            return item if md.hasFormat(ENTRY_MIME) else None
         target_in_bin = bool(item.data(0, Qt.UserRole + 1))
         if target_in_bin and target != self.bin_id:
             return None  # only the Recycle Bin itself, not folders inside it
@@ -802,6 +923,9 @@ class EntryModel(QAbstractTableModel):
                 return "This entry has expired"
             if col == 0 and self.is_dimmed_backup(e):
                 return f"An old copy, kept in the Backup folder ({e['folder']})"
+            if col == 0 and e["password"]:
+                return ("Double-click to copy the password and minimise" if setting("minimise_on_copy", True)
+                        else "Double-click to copy the password")
             if col in (1, 2):
                 return "Double-click to copy and minimise" if setting("minimise_on_copy", True) else "Double-click to copy"
             if col == 3 and e["url"]:
@@ -914,36 +1038,188 @@ class GripSplitter(QSplitter):
         return GripHandle(self.orientation(), self)
 
 
-class NotesPanel(SimpleCardWidget):
-    """Shows the selected entry's title, folder, notes and modified date under the table."""
+def star_icon(filled, size=16):
+    """A star: filled (a favourite) or an outline (not)."""
+    scale = 3
+    pm = QPixmap(size * scale, size * scale)
+    pm.fill(Qt.transparent)
+    p = QPainter(pm)
+    p.setRenderHint(QPainter.Antialiasing)
+    path = star_path(QRectF(2, 2, size * scale - 4, size * scale - 4))
+    if filled:
+        p.setPen(Qt.NoPen)
+        p.setBrush(STAR_COLOR)
+    else:
+        p.setPen(QPen(QColor("#c5cbd0" if isDarkTheme() else "#5c656d"), 1.4 * scale))
+    p.drawPath(path)
+    p.end()
+    pm.setDevicePixelRatio(scale)
+    return QIcon(pm)
+
+
+def copy_button(tip, on_click):
+    """A copy button that turns into a tick for a moment once it has copied."""
+    button = TransparentToolButton(FIF.COPY)
+    button.setToolTip(shortcut_text(tip))
+
+    def clicked():
+        on_click()
+        button.setIcon(FIF.ACCEPT)
+        QTimer.singleShot(1500, lambda: shiboken_alive(button) and button.setIcon(FIF.COPY))
+    button.clicked.connect(clicked)
+    return button
+
+
+def shiboken_alive(widget):
+    """False once Qt has deleted the widget (e.g. a details row rebuilt for another entry)."""
+    import shiboken6
+    return shiboken6.isValid(widget)
+
+
+# Health problems shown as a small label by the password: (text, style), most serious first
+STRENGTH_CHIPS = [("weak", "Weak", "bad"), ("empty", "", None), ("reused", "Reused", "warn"),
+                  ("expired", "Expired", "bad"), ("old", "Old", "info")]
+CHIP_COLORS = {  # style: ((light background, text), (dark background, text))
+    "good": (("#dcf2e2", "#17612d"), ("#173a22", "#8fd9a4")),
+    "warn": (("#fbe8d2", "#7f4306"), ("#3d2a12", "#f2b36b")),
+    "bad": (("#fde2e1", "#a4262c"), ("#44191b", "#ff9a9e")),
+    "info": (("#e1ecf8", "#1d4f8a"), ("#1b2a3d", "#9cc3f0")),
+}
+
+
+def password_html(password, colorize):
+    """A revealed password as rich text: monospaced, each character coloured by its kind."""
+    dark = isDarkTheme()
+    plain = PASSWORD_PLAIN[dark] if colorize else ("#ffffff" if dark else "#000000")
+    out = []
+    for ch in password:
+        kind = char_kind(ch) if colorize else "lower"
+        text = {"<": "&lt;", ">": "&gt;", "&": "&amp;", " ": "&nbsp;"}.get(ch, ch)
+        if kind in PASSWORD_COLORS:
+            out.append(f'<span style="color:{PASSWORD_COLORS[kind][dark]}; font-weight:600">{text}</span>')
+        else:
+            out.append(f'<span style="color:{plain}">{text}</span>')
+    return "".join(out)
+
+
+class FieldRow(QWidget):
+    """One line of the details pane: a small label over the value, with its buttons on the right.
+    A hairline separates it from the row above."""
+
+    def __init__(self, label, value=None, parent=None):
+        super().__init__(parent)
+        self.first = False
+        self.line = QHBoxLayout(self)
+        self.line.setContentsMargins(18, 9, 10, 9)
+        self.line.setSpacing(2)
+        texts = QVBoxLayout()
+        texts.setSpacing(2)
+        self.label = caption(label)
+        texts.addWidget(self.label)
+        self.value = value if value is not None else BodyLabel("")
+        if isinstance(self.value, QLabel):
+            self.value.setTextInteractionFlags(Qt.TextSelectableByMouse)
+            self.value.setMinimumWidth(1)  # long values are cut off rather than widening the pane
+            self.value.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        texts.addWidget(self.value)
+        self.line.addLayout(texts, 1)
+
+    def add_button(self, button):
+        button.setFixedSize(34, 34)
+        button.setIconSize(QSize(16, 16))
+        self.line.addWidget(button, 0, Qt.AlignVCenter)
+        return button
+
+    def paintEvent(self, _event):
+        if not self.first:
+            p = QPainter(self)
+            p.setPen(QColor(255, 255, 255, 22) if isDarkTheme() else QColor(0, 0, 0, 20))
+            p.drawLine(18, 0, self.width() - 18, 0)
+
+
+class NotesPanel(QWidget):
+    """The selected entry, beside the list: its icon, title and folder; a row for each field
+    (username, password, website, 2FA code, extra fields, attachments) with buttons to copy, show
+    or open it; then its notes."""
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self.setMinimumHeight(90)
+        self.setMinimumWidth(340)
+        self.entry = None
+        self.revealed = False
         root = QVBoxLayout(self)
-        root.setContentsMargins(20, 14, 20, 14)
-        root.setSpacing(8)
+        root.setContentsMargins(30, 20, 26, 14)
+        root.setSpacing(0)
+        vault = lambda: self.window().vault
+
         head = QHBoxLayout()
-        self.title = StrongBodyLabel("")
-        head.addWidget(self.title)
+        head.setSpacing(16)
+        self.icon = QLabel()
+        self.icon.setFixedSize(56, 56)
+        head.addWidget(self.icon, 0, Qt.AlignVCenter)
+        names = QVBoxLayout()
+        names.setSpacing(2)
+        self.title = TitleLabel("")
+        self.title.setMinimumWidth(1)
+        self.title.setSizePolicy(QSizePolicy.Ignored, QSizePolicy.Preferred)
+        names.addWidget(self.title)
+        sub = QHBoxLayout()
+        sub.setSpacing(0)
         self.path = caption("")
-        head.addWidget(self.path, 1)
         self.modified = caption("")
-        head.addWidget(self.modified)
+        for label in (self.path, self.modified):
+            label.setMinimumWidth(1)
+        sub.addWidget(self.path)
+        sub.addWidget(self.modified, 1)
+        names.addLayout(sub)
+        head.addLayout(names, 1)
+        self.fav_btn = TransparentToolButton(star_icon(False))
+        self.fav_btn.setFixedSize(36, 36)
+        self.fav_btn.clicked.connect(lambda: vault().toggle_favourite())
+        head.addWidget(self.fav_btn, 0, Qt.AlignVCenter)
+        self.edit_btn = PushButton(FIF.EDIT, "Edit")
+        self.edit_btn.setToolTip(shortcut_text("Edit (Enter)"))
+        self.edit_btn.clicked.connect(lambda: vault().edit_entry())
+        head.addWidget(self.edit_btn, 0, Qt.AlignVCenter)
         root.addLayout(head)
+        root.addSpacing(18)
+
+        # The fields, on a card
+        self.card = SimpleCardWidget()
+        fields = QVBoxLayout(self.card)
+        fields.setContentsMargins(0, 3, 0, 3)
+        fields.setSpacing(0)
+        self.user_row = FieldRow("Username")
+        self.user_row.add_button(copy_button("Copy username (Ctrl+B)", lambda: vault().copy_username()))
+        self.pw_value = QLabel()
+        self.pw_value.setTextFormat(Qt.RichText)
+        self.pw_row = FieldRow("Password", self.pw_value)
+        self.chip = QLabel()
+        self.pw_row.line.addWidget(self.chip, 0, Qt.AlignVCenter)
+        self.pw_row.line.addSpacing(6)
+        self.eye = self.pw_row.add_button(TransparentToolButton(FIF.VIEW))
+        self.eye.clicked.connect(lambda: self.set_revealed(not self.revealed))
+        self.pw_row.add_button(copy_button("Copy password (Ctrl+C)", lambda: vault().copy_password()))
+        self.url_value = BodyLabel("")
+        self.url_value.linkActivated.connect(lambda _link: vault().open_url())
+        self.url_row = FieldRow("Website", self.url_value)
+        self.url_value.setTextInteractionFlags(Qt.LinksAccessibleByMouse)
+        opener = self.url_row.add_button(TransparentToolButton(icon("GLOBE", "LINK")))
+        opener.setToolTip(shortcut_text("Open website (Ctrl+U)"))
+        opener.clicked.connect(lambda: vault().open_url())
+        self.url_row.add_button(copy_button("Copy website", lambda: vault().copy_url()))
 
         # Live 2FA code, shown only for entries that have one
-        self.totp_box = QWidget()
-        t = QHBoxLayout(self.totp_box)
+        code = QWidget()
+        t = QHBoxLayout(code)
         t.setContentsMargins(0, 0, 0, 0)
         t.setSpacing(10)
-        t.addWidget(caption("2FA code"))
         self.totp_code = StrongBodyLabel("")
-        qss = f"StrongBodyLabel {{ {mono_font_qss(18)} letter-spacing: 2px; }}"
+        qss = f"StrongBodyLabel {{ {mono_font_qss(20)} letter-spacing: 2px; }}"
         setCustomStyleSheet(self.totp_code, qss, qss)
         t.addWidget(self.totp_code)
         self.totp_ring = ProgressRing()
-        self.totp_ring.setFixedSize(22, 22)
+        self.totp_ring.setFixedSize(20, 20)
         self.totp_ring.setStrokeWidth(3)
         self.totp_ring.setTextVisible(False)
         self.totp_ring.setUseAni(False)  # it moves one step a second; animating each step cost ~4% CPU
@@ -953,57 +1229,59 @@ class NotesPanel(SimpleCardWidget):
         self.totp_left.setFixedSize(self.totp_left.fontMetrics().horizontalAdvance("88s") + 6,
                                     self.totp_left.fontMetrics().height() + 4)
         t.addWidget(self.totp_left)
-        copy = TransparentToolButton(FIF.COPY)
-        copy.setToolTip(shortcut_text("Copy 2FA code (Ctrl+T)"))
-        copy.clicked.connect(lambda: self.window().vault.copy_totp())
-        t.addWidget(copy)
         t.addStretch(1)
-        root.addWidget(self.totp_box)
+        self.totp_box = FieldRow("2FA code", code)
+        self.totp_box.add_button(copy_button("Copy 2FA code (Ctrl+T)", lambda: vault().copy_totp()))
         self.totp_timer = QTimer(self, interval=1000, timeout=self._tick)
-        self.entry = None
 
         # Extra fields (e.g. "PIN") and attached files, shown only for entries that have them
         self.extra_box = QWidget()
-        self.extra = QGridLayout(self.extra_box)
+        self.extra = QVBoxLayout(self.extra_box)
         self.extra.setContentsMargins(0, 0, 0, 0)
-        self.extra.setHorizontalSpacing(10)
-        self.extra.setVerticalSpacing(0)
-        self.extra.setColumnStretch(4, 1)
-        root.addWidget(self.extra_box)
+        self.extra.setSpacing(0)
+        self.rows = [self.user_row, self.pw_row, self.url_row, self.totp_box]
+        for row in self.rows + [self.extra_box]:
+            fields.addWidget(row)
+        root.addWidget(self.card)
 
+        root.addSpacing(22)
+        self.notes_label = caption("Notes")
+        root.addWidget(self.notes_label)
+        root.addSpacing(4)
         self.notes = PlainTextEdit()
         self.notes.setReadOnly(True)
         self.notes.setPlaceholderText("No notes")
+        self.notes.layer.hide()  # no accent underline: it's for reading, not a box to type in
+        self.set_notes_px(14)
         root.addWidget(self.notes, 1)
+        qconfig.themeChanged.connect(lambda: self.set_entry(self.entry))
         self.set_entry(None)
+
+    def set_notes_px(self, px):
+        """The notes' text size, and no box around them (one style sheet: setting one replaces the other)."""
+        qss = (f"QPlainTextEdit, QPlainTextEdit:hover, QPlainTextEdit:focus {{ background: transparent;"
+               f" border: none; padding: 0px; font-size: {px}px; }}")
+        setCustomStyleSheet(self.notes, qss, qss)
 
     def _show_extra(self, e):
         while self.extra.count():
             self.extra.takeAt(0).widget().deleteLater()
         fields, files = (e["fields"], e["attachments"]) if e else ([], [])
         self.extra_box.setVisible(bool(fields or files))
-        for row, (name, value, hidden) in enumerate(fields):
-            self.extra.addWidget(caption(name), row, 0)
+        for name, value, hidden in fields:
             shown = value.splitlines()[0] + " …" if "\n" in value else value
             label = BodyLabel("•" * 8 if hidden and value else shown)
-            label.setMaximumWidth(420)
+            row = FieldRow(name, label)
             if not hidden:
                 label.setToolTip(value)
-                label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-            self.extra.addWidget(label, row, 1)
             if hidden and value:
-                reveal = TransparentToggleToolButton(FIF.VIEW)
+                reveal = row.add_button(TransparentToggleToolButton(FIF.VIEW))
                 reveal.setToolTip("Show")
                 reveal.toggled.connect(lambda on, lbl=label, v=shown: lbl.setText(v if on else "•" * 8))
-                self.extra.addWidget(reveal, row, 2)
             if value:
-                copy = TransparentToolButton(FIF.COPY)
-                copy.setToolTip(f"Copy {name}")
-                copy.clicked.connect(lambda _=False, n=name, v=value: self.window().copy_secret(v, n))
-                self.extra.addWidget(copy, row, 3)
+                row.add_button(copy_button(f"Copy {name}", lambda n=name, v=value: self.window().copy_secret(v, n)))
+            self.extra.addWidget(row)
         if files:
-            row = len(fields)
-            self.extra.addWidget(caption("Attachments"), row, 0)
             box = QWidget()
             line = QHBoxLayout(box)
             line.setContentsMargins(0, 0, 0, 0)
@@ -1014,18 +1292,7 @@ class NotesPanel(SimpleCardWidget):
                 button.clicked.connect(lambda _=False, n=name: self.save_attachment(n))
                 line.addWidget(button)
             line.addStretch(1)
-            self.extra.addWidget(box, row, 1, 1, 4)
-        for kind in (TransparentToolButton, TransparentToggleToolButton):
-            for button in self.extra_box.findChildren(kind):
-                button.setFixedSize(28, 28)
-                button.setIconSize(QSize(14, 14))
-        for button in self.extra_box.findChildren(TransparentPushButton):
-            button.setFixedHeight(28)
-        # Room for these rows as well as a little of the notes (the splitter gives way)
-        rows = len(fields) + bool(files)
-        self.extra_box.setFixedHeight(rows * 28 + max(0, rows - 1) * self.extra.verticalSpacing())
-        extra = self.extra_box.height() + self.layout().spacing() if rows else 0
-        self.setMinimumHeight(130 + extra)
+            self.extra.addWidget(FieldRow("Attachments", box))
 
     def save_attachment(self, name):
         """Saves an attached file where the user chooses (it's only ever written decrypted there)."""
@@ -1046,6 +1313,8 @@ class NotesPanel(SimpleCardWidget):
                         position=InfoBarPosition.TOP_RIGHT, duration=2000, parent=self.window())
 
     def set_entry(self, e):
+        if e is not self.entry:
+            self.revealed = False
         self.entry = e
         self._show_extra(e)
         self.totp_box.setVisible(bool(e and e["totp"]))
@@ -1054,6 +1323,8 @@ class NotesPanel(SimpleCardWidget):
             self.totp_timer.start()
         else:
             self.totp_timer.stop()
+        for part in (self.icon, self.fav_btn, self.edit_btn, self.card, self.notes_label, self.notes):
+            part.setVisible(e is not None)
         if e is None:
             self.title.setText("No entry selected")
             self.path.setText("")
@@ -1061,12 +1332,76 @@ class NotesPanel(SimpleCardWidget):
             self.notes.clear()
             return
         self.title.setText(e["title"])
-        self.path.setText("   " + (" › ".join(e["path"]) or "Root"))
+        vault = self.window().vault
+        ratio = self.devicePixelRatioF()
+        picture = QPixmap(round(56 * ratio), round(56 * ratio))
+        picture.fill(Qt.transparent)
+        picture.setDevicePixelRatio(ratio)
+        painter = QPainter(picture)
+        draw_entry_tile(painter, QRect(0, 0, 56, 56), e, vault.model.icons)
+        painter.end()
+        self.icon.setPixmap(picture)
+        self.path.setText(" › ".join(e["path"]))
+        self.path.setVisible(bool(e["path"]))  # nothing for entries at the top level
         status = f"Modified {e['modified']}" if e["modified"] else ""
         if e["expired"]:
             status = "Expired  ·  " + status
-        self.modified.setText(status)
+        self.modified.setText(f"  ·  {status}" if status and self.path.text() else status)
+        self.fav_btn.setIcon(star_icon(e["favourite"]))
+        self.fav_btn.setToolTip("Remove from Favourites" if e["favourite"] else "Add to Favourites")
+        editable = vault._editable()
+        self.fav_btn.setEnabled(editable)
+        self.edit_btn.setVisible(editable)
+
+        self.user_row.value.setText(e["username"])
+        self.user_row.setVisible(bool(e["username"]))
+        self.pw_row.setVisible(bool(e["password"]))
+        self.set_revealed(self.revealed)
+        self.update_chip()
+        self.url_row.setVisible(bool(e["url"]))
+        url = self.url_value.fontMetrics().elidedText(e["url"], Qt.ElideMiddle, 520)
+        self.url_value.setText(f'<a href="open" style="color:{QColor(themeColor()).name()}; text-decoration:none">'
+                               f'{url.replace("&", "&amp;").replace("<", "&lt;")}</a>')
+        shown = [row for row in self.rows if row.isVisibleTo(self.card)]
+        for row in self.rows:
+            row.first = bool(shown) and row is shown[0]
+        self.card.setVisible(bool(shown) or self.extra_box.isVisibleTo(self.card))
         self.notes.setPlainText(e["notes"])
+
+    def set_revealed(self, on):
+        """Shows or hides the password (each entry starts hidden)."""
+        self.revealed = on
+        e = self.entry
+        if e is None:
+            return
+        if on and e["password"]:
+            self.pw_value.setText(password_html(e["password"], setting("color_passwords", True)))
+        else:
+            self.pw_value.setText(f'<span style="color:{"#ffffff" if isDarkTheme() else "#000000"}">{"•" * 12}</span>')
+        mono = QFont(MONO_FAMILY)
+        mono.setStyleHint(QFont.TypeWriter)
+        mono.setPixelSize(15)
+        self.pw_value.setFont(mono)
+        self.eye.setIcon(FIF.HIDE if on else FIF.VIEW)
+        self.eye.setToolTip("Hide password" if on else "Show password")
+
+    def update_chip(self):
+        """The password's health problem (weak, reused, …), or "Strong", once the check has run."""
+        e = self.entry
+        problems = self.window().health.problems(e["uuid"]) if e else None
+        if not e or not e["password"] or problems is None:
+            self.chip.hide()
+            return
+        text, style = next(((t, s) for issue, t, s in STRENGTH_CHIPS if issue in problems), ("Strong", "good"))
+        if not style:
+            self.chip.hide()
+            return
+        background, color = CHIP_COLORS[style][isDarkTheme()]
+        self.chip.setText(text)
+        self.chip.setStyleSheet(f"QLabel {{ background: {background}; color: {color}; border-radius: 10px;"
+                                f" padding: 2px 9px; font-size: 12px; }}")
+        self.chip.setToolTip("\n".join(problems.values()) if problems else "No problems found in Password health")
+        self.chip.show()
 
     def pause(self, paused):
         """Minimised: stop the 2FA countdown (its ring animates every second); restart it on restore."""
@@ -1089,7 +1424,8 @@ class NotesPanel(SimpleCardWidget):
 
 
 class VaultView(QWidget):
-    """KeePass-style layout: folder tree | entry table with notes underneath."""
+    """The entry list (cards) with the selected entry's details beside it. The folders it shows
+    (self.tree) and the New entry button live in the window's sidebar; the search box in the title bar."""
 
     listTextChanged = Signal(int)  # the list text size (%) changed, e.g. with Ctrl+wheel
 
@@ -1100,21 +1436,10 @@ class VaultView(QWidget):
         self.folder = None
 
         root = QHBoxLayout(self)
-        root.setContentsMargins(12, 8, 24, 12)
+        root.setContentsMargins(0, 0, 0, 0)
         root.setSpacing(0)
 
-        # Folder tree
-        tree_col = QVBoxLayout()
-        tree_col.setSpacing(8)
-        tree_col.setContentsMargins(0, 0, 6, 0)  # compact; the "Folders" heading lines up with the list's heading
-        tree_head = QHBoxLayout()
-        self.folders_title = SubtitleLabel("Folders")
-        tree_head.addWidget(self.folders_title, 1)
-        self.new_folder_btn = TransparentToolButton(icon("FOLDER_ADD", "ADD"))
-        self.new_folder_btn.setToolTip("New folder")
-        self.new_folder_btn.clicked.connect(lambda: self.new_folder())
-        tree_head.addWidget(self.new_folder_btn)
-        tree_col.addLayout(tree_head)
+        # Folders (shown in the sidebar)
         self.tree = FolderTree()
         self.folder_delegate = FolderRowDelegate(self.tree)  # row height follows Settings → Row density
         self.tree.setItemDelegate(self.folder_delegate)
@@ -1126,60 +1451,56 @@ class VaultView(QWidget):
         self.tree.setIndentation(10)  # compact: each level is still clearly offset
         self.tree.scrollDelagate.verticalSmoothScroll.setSmoothMode(SmoothMode.NO_SMOOTH)
         self.tree.currentItemChanged.connect(self._on_folder)
+        self.tree.itemClicked.connect(lambda *_: self._show_page())  # e.g. from Settings: back to the list
         for signal in (self.tree.itemExpanded, self.tree.itemCollapsed):  # what's visible changed: fit again
-            signal.connect(lambda _item: QTimer.singleShot(0, self.fit_folder_panel))
-        tree_col.addWidget(self.tree, 1)
-        tree_box = QWidget()
-        tree_box.setLayout(tree_col)
-        tree_box.setMinimumWidth(150)
+            signal.connect(lambda _item: QTimer.singleShot(0, self._fit_sidebar))
+        self.new_btn = PrimaryPushButton(FIF.ADD, "New entry")
+        self.new_btn.setToolTip(shortcut_text("New entry (Ctrl+N)"))
+        self.new_btn.clicked.connect(self.new_entry)
 
-        # Header, table, notes
-        right = QVBoxLayout()
-        right.setContentsMargins(4, 0, 0, 0)
-        right.setSpacing(8)
-        head = QHBoxLayout()
-        head.setSpacing(8)
-        # One line: folder name, then "302 entries · All changes saved" beside it (it used to take two).
-        titles = QHBoxLayout()
-        titles.setSpacing(10)
-        self.list_title = SubtitleLabel("")
-        self.count = caption("")
-        self.save_status = caption("")
-        for label in (self.list_title, self.count, self.save_status):
-            titles.addWidget(label, 0, Qt.AlignVCenter)
-            # Cut off rather than push the buttons over each other when the window is narrow.
-            label.setMinimumWidth(1 if label is not self.list_title else 40)
-        titles.addStretch(1)
-        head.addLayout(titles, 1)
+        # The search box (shown in the title bar). Ctrl+F or Ctrl+K: see MainWindow.
         self.search = SearchLineEdit()
-        self.search.setPlaceholderText("Search all folders")
-        self.search.setMinimumWidth(150)  # shrinks before anything overlaps (see _fit_header)
-        self.search.setMaximumWidth(280)
-        self.search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.search.setPlaceholderText("Search all entries")
+        self.search.setToolTip(shortcut_text("Search (Ctrl+F)"))
         # Wait for a short pause in typing before filtering.
         self.search_timer = QTimer(self, singleShot=True, interval=120, timeout=self.refresh)
         self.search.textChanged.connect(self.search_timer.start)
-        head.addWidget(self.search, 1, Qt.AlignVCenter)  # shares spare room with the titles, up to 280 px
-        # Keyboard: Ctrl+F to search; Down or Enter moves on to the results (then Ctrl+C copies).
-        self.search.setToolTip(shortcut_text("Search (Ctrl+F)"))
-        local_shortcut("Ctrl+F", self, self.focus_search)
+        # Down or Enter moves on to the results (then Ctrl+C copies).
         for keys in ("Down", "Return", "Enter"):
             local_shortcut(keys, self.search, self.focus_results)
-        self.reveal = TransparentTogglePushButton(FIF.VIEW, "Show passwords")
-        self.reveal.toggled.connect(self._on_reveal)
-        head.addWidget(self.reveal, 0, Qt.AlignVCenter)
+
+        # The list's heading: the folder name with sort and check buttons, and under it
+        # "302 entries · All changes saved"
+        right = QVBoxLayout()
+        right.setContentsMargins(14, 14, 6, 6)
+        right.setSpacing(8)
+        head = QHBoxLayout()
+        head.setContentsMargins(8, 0, 0, 0)
+        head.setSpacing(6)
+        titles = QVBoxLayout()
+        titles.setSpacing(0)
+        self.list_title = SubtitleLabel("")
+        self.list_title.setMinimumWidth(40)  # cut off rather than push the buttons over each other
+        titles.addWidget(self.list_title)
+        status = QHBoxLayout()
+        status.setSpacing(8)
+        self.count = caption("")
+        self.save_status = caption("")
+        for label in (self.count, self.save_status):
+            label.setMinimumWidth(1)
+            status.addWidget(label)
+        status.addStretch(1)
+        titles.addLayout(status)
+        head.addLayout(titles, 1)
+        self.sort_btn = TransparentToolButton(icon("SCROLL", "UP"))
+        self.sort_btn.setToolTip("Sort")
+        self.sort_btn.clicked.connect(self._sort_menu)
+        head.addWidget(self.sort_btn, 0, Qt.AlignVCenter)
         self.check_btn = TransparentToolButton(FIF.SYNC)
         self.check_btn.setToolTip("Check for changes made on other devices or apps (F5)")
         self.check_btn.clicked.connect(self.check_for_changes)
         head.addWidget(self.check_btn, 0, Qt.AlignVCenter)
-        self.new_btn = PrimaryPushButton(FIF.ADD, "New entry")
-        self.new_btn.setToolTip(shortcut_text("New entry (Ctrl+N)"))
-        self.new_btn.clicked.connect(self.new_entry)
-        head.addWidget(self.new_btn, 0, Qt.AlignVCenter)
         right.addLayout(head)
-        local_shortcut("Ctrl+N", self, self.new_entry)
-        local_shortcut("Ctrl+Z", self, self.undo)
-        local_shortcut("F5", self, self.check_for_changes)
 
         self.model = EntryModel(self)
         self.table = TableView()
@@ -1189,12 +1510,12 @@ class VaultView(QWidget):
         self.delegate = EntryDelegate(self.table, self.model)
         self.table.setItemDelegate(self.delegate)
         self.table.scrollDelagate.verticalSmoothScroll.setSmoothMode(SmoothMode.NO_SMOOTH)
-        self.table.setBorderVisible(True)
-        self.table.setBorderRadius(8)
+        self.table.setBorderVisible(False)
         self.table.setWordWrap(False)
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SingleSelection)
         self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.table.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.table.verticalHeader().hide()
         self.table.verticalHeader().setSectionResizeMode(QHeaderView.Fixed)
         # Deferred (once per batch of changes, and never while the window is being torn down)
@@ -1202,39 +1523,15 @@ class VaultView(QWidget):
         for bar in (self.table.verticalScrollBar(), self.table.horizontalScrollBar()):
             bar.rangeChanged.connect(lambda *_: self.gutter_timer.start())
         self.set_density(setting("row_density", "Comfortable"))
-        self.table.setSortingEnabled(True)
-        self.table.sortByColumn(EntryModel.TITLE, Qt.AscendingOrder)
+        # One card per entry: only the first column shows (the card draws the rest), across the list
         header = self.table.horizontalHeader()
-        header.setHighlightSections(False)
-        # Every column can be resized by dragging its right edge; only the last one stretches to fill
-        # the table (a stretching column can't be resized by hand, and gets squeezed to what's left).
-        header.setSectionResizeMode(QHeaderView.Interactive)
-        header.setStretchLastSection(True)
-        header.setMinimumSectionSize(60)
-        for col, width in ((EntryModel.TITLE, 220), (EntryModel.USERNAME, 200), (EntryModel.PASSWORD, 190),
-                           (EntryModel.WEBSITE, 240), (EntryModel.FOLDER, 160), (EntryModel.MODIFIED, 150),
-                           (EntryModel.CREATED, 150)):
-            self.table.setColumnWidth(col, width)
-        # Remember sorting, column widths and column order.
-        header.setSectionsMovable(True)
-        state = settings.value("table_header")
-        if state is not None and header.restoreState(state):
-            self.table.sortByColumn(header.sortIndicatorSection(), header.sortIndicatorOrder())
-            # Layouts saved by earlier versions made Website stretch (and so not resizable): undo that.
-            header.setSectionResizeMode(QHeaderView.Interactive)
-            header.setStretchLastSection(True)
-            if header.sectionSize(EntryModel.WEBSITE) < 120:
-                header.resizeSection(EntryModel.WEBSITE, 240)
-        # Which columns are shown: right-click a column heading. Kept as its own setting (applied after
-        # the saved layout), so layouts saved before a column existed still work; Created starts hidden.
-        self._apply_hidden_columns()
-        header.setContextMenuPolicy(Qt.CustomContextMenu)
-        header.customContextMenuRequested.connect(self._columns_menu)
-        self.header_timer = QTimer(self, singleShot=True, interval=400,
-                                   timeout=lambda: settings.setValue("table_header", header.saveState()))
-        header.sortIndicatorChanged.connect(self.header_timer.start)
-        header.sectionResized.connect(self.header_timer.start)
-        header.sectionMoved.connect(self.header_timer.start)
+        header.hide()
+        for col in range(1, len(EntryModel.COLUMNS)):
+            header.setSectionHidden(col, True)
+        header.setSectionResizeMode(EntryModel.TITLE, QHeaderView.Stretch)
+        self.table.setSortingEnabled(True)
+        column, order = self._saved_sort()
+        self.table.sortByColumn(column, order)
         self.table.selectionModel().currentRowChanged.connect(self._on_row)
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
@@ -1258,19 +1555,16 @@ class VaultView(QWidget):
             local_shortcut(keys, self, lambda step=step: self.zoom_list_text(step))
         local_shortcut("Ctrl+0", self, lambda: self.set_list_text_size(100))
 
-        self.splitter = GripSplitter(Qt.Vertical, "notes_splitter", [self.table, self.notes], [600, 170])
-        right.addWidget(self.splitter, 1)
-        right_box = QWidget()
-        right_box.setLayout(right)
-        right_box.setMinimumWidth(400)
-        self.right_box = right_box
-        self._reveal_icon_only = False
-        right_box.installEventFilter(self)  # its resizes drive _fit_header
-        self.tree_splitter = GripSplitter(Qt.Horizontal, "tree_splitter", [tree_box, right_box], [240, 1000])
-        self.tree_splitter.setHandleWidth(10)  # still easy to grab, less of a gap between the panels
-        root.addWidget(self.tree_splitter)
-        # The UI library pads each folder row by 20 px on the left; 16 still clears the expand arrows.
-        row_qss = "QTreeView::item { padding-left: 16px; }"
+        right.addWidget(self.table, 1)
+        list_box = QWidget()
+        list_box.setLayout(right)
+        list_box.setMinimumWidth(260)
+        # The list and the details, side by side; drag the divider to make the list wider
+        self.splitter = GripSplitter(Qt.Horizontal, "list_splitter", [list_box, self.notes], [380, 900])
+        self.splitter.setHandleWidth(9)
+        root.addWidget(self.splitter)
+        # The UI library pads each folder row by 20 px on the left; 12 still clears the expand arrows.
+        row_qss = "QTreeView::item { padding-left: 12px; }"
         setCustomStyleSheet(self.tree, row_qss, row_qss)
         qconfig.themeChanged.connect(self._set_tree_icons)
 
@@ -1296,7 +1590,6 @@ class VaultView(QWidget):
         self.search.clear()
         self.search.blockSignals(False)
         self.new_btn.setVisible(db.writable)
-        self.new_folder_btn.setVisible(db.writable)
         self.model.draggable = db.writable
         self.table.setDragEnabled(db.writable)
         self.tree.setDragEnabled(db.writable)
@@ -1305,11 +1598,25 @@ class VaultView(QWidget):
         self.tree.blockSignals(True)
         self.tree._hover = None
         self.tree.clear()
-        root_item = QTreeWidgetItem([f"{db.name}  ({sum(not e['in_bin'] for e in db.entries)})"])
+        # All entries and Favourites, then the "Folders" heading and the top-level folders under it
+        # (the database's root folder is "All entries").
+        root_item = QTreeWidgetItem([f"All entries  ({sum(not e['in_bin'] for e in db.entries)})"])
         root_item.setData(0, Qt.UserRole, None)
         root_item.setFlags(root_item.flags() & ~Qt.ItemIsDragEnabled)
         self.tree.addTopLevelItem(root_item)
-        items = {None: root_item}
+        favourites = QTreeWidgetItem([f"Favourites  ({sum(in_folder(e, FAVOURITES) for e in db.entries)})"])
+        favourites.setData(0, Qt.UserRole, FAVOURITES)
+        favourites.setFlags(favourites.flags() & ~Qt.ItemIsDragEnabled)
+        favourites.setToolTip(0, "Star an entry to keep it here (drop entries here to star them)")
+        self.tree.addTopLevelItem(favourites)
+        if db.folders:
+            heading = QTreeWidgetItem([""])
+            heading.setData(0, Qt.UserRole, FOLDERS_HEADING)
+            heading.setData(0, Qt.UserRole + 4, db.writable)
+            heading.setFlags(Qt.NoItemFlags)  # not selectable; its + is handled in eventFilter
+            heading.setToolTip(0, "New folder" if db.writable else "")
+            self.tree.addTopLevelItem(heading)
+        items = {None: root_item, FAVOURITES: favourites}
         for f in db.folders:
             n = sum(in_folder(e, f["id"]) for e in db.entries)
             item = QTreeWidgetItem([f"{f['name']}  ({n})"])
@@ -1318,7 +1625,10 @@ class VaultView(QWidget):
             item.setData(0, Qt.UserRole + 2, f.get("icon"))
             if f["id"] == db.bin_id or f["in_bin"]:
                 item.setFlags(item.flags() & ~Qt.ItemIsDragEnabled)
-            items[f["parent"]].addChild(item)
+            if f["parent"] is None:
+                self.tree.addTopLevelItem(item)
+            else:
+                items[f["parent"]].addChild(item)
             items[f["id"]] = item
         self.tree.expandAll()
         self._set_tree_icons()
@@ -1348,7 +1658,6 @@ class VaultView(QWidget):
         self.search.blockSignals(True)
         self.search.clear()
         self.search.blockSignals(False)
-        self.reveal.setChecked(False)
         self.model.revealed.clear()
         self.model.set_entries([])
         self.model.icons = None
@@ -1364,36 +1673,38 @@ class VaultView(QWidget):
             item = it.value()
             if getattr(self, "_tree_font", None) is not None:
                 item.setData(0, Qt.FontRole, self._tree_font)  # Settings → List text size
+            kind = item.data(0, Qt.UserRole)
             own = None  # the folder's own icon from the database (as KeePass shows it), if it has one
-            if item.parent() and not item.data(0, Qt.UserRole + 1) and self.model.icons and item.data(0, Qt.UserRole + 2):
+            if (kind not in (None, FAVOURITES, FOLDERS_HEADING) and not item.data(0, Qt.UserRole + 1)
+                    and self.model.icons and item.data(0, Qt.UserRole + 2)):
                 own = self.model.icons.folder(item.data(0, Qt.UserRole + 2))
-            if own:
+            if kind == FOLDERS_HEADING:
+                pass
+            elif own:
                 item.setIcon(0, own)
-            elif not item.parent():
+            elif kind is None:
                 item.setIcon(0, icon("LIBRARY", "FOLDER").icon())
+            elif kind == FAVOURITES:
+                item.setIcon(0, star_icon(True))
             elif item.data(0, Qt.UserRole + 1):
                 item.setIcon(0, FIF.DELETE.icon())
             else:
                 item.setIcon(0, FIF.FOLDER.icon())
             it += 1
         self.tree.doItemsLayout()  # the tree caches row heights: recalculate them for the new size
-        QTimer.singleShot(0, self.fit_folder_panel)
+        QTimer.singleShot(0, self._fit_sidebar)
 
-    def fit_folder_panel(self):
-        """Makes the folder panel just wide enough for its widest folder name (with its indent), between
-        the width of the "Folders" heading and 40% of the page. Dragging the divider still works; it
-        fits again when the folders or the text size change."""
-        if not self.tree.topLevelItemCount() or not self.isVisible():
-            return
-        tree = self.tree
-        rows = tree.sizeHintForColumn(0)  # widest visible row, including indentation and padding
-        frame = tree.width() - tree.viewport().width()  # border and (if shown) the scroll bar
-        margins = self.tree.parentWidget().layout().contentsMargins()
-        wanted = rows + frame + margins.left() + margins.right() + 8  # 8 px to spare
-        heading = self.folders_title.sizeHint().width() + self.new_folder_btn.sizeHint().width() + 24
-        total = sum(self.tree_splitter.sizes())
-        width = max(heading, 150, min(wanted, int(total * 0.4)))
-        self.tree_splitter.setSizes([width, total - width])
+    def _fit_sidebar(self):
+        sidebar = getattr(self.window(), "sidebar", None)
+        if sidebar is not None:
+            sidebar.fit()
+
+    def _show_page(self):
+        """Shows the list (after a folder is clicked while Password health or Settings shows)."""
+        window = self.window()
+        if hasattr(window, "switchTo") and window.stackedWidget.currentWidget() is not self:
+            window.switchTo(self)
+
     @staticmethod
     def _folder_key(db):
         # One remembered folder per database file (keys can't contain the path itself).
@@ -1403,7 +1714,7 @@ class VaultView(QWidget):
         return setting(self._folder_key(db), "") or None
 
     def _on_folder(self, item, _previous):
-        if item is None:
+        if item is None or item.data(0, Qt.UserRole) == FOLDERS_HEADING:
             return
         self.folder = item.data(0, Qt.UserRole)
         if self.db is not None:
@@ -1449,19 +1760,15 @@ class VaultView(QWidget):
     def _on_row(self, current, _previous):
         self.notes.set_entry(self.model.data(current, Qt.UserRole) if current.isValid() else None)
 
-    def _on_reveal(self, on):
-        self.model.set_show_passwords(on)
-        self.reveal.setIcon(FIF.HIDE if on else FIF.VIEW)
-        label = "Hide passwords" if on else "Show passwords"
-        self.reveal.setText("" if self._reveal_icon_only else label)
-        self.reveal.setToolTip(label)
-
-    # Header widths (px of the right-hand panel) below which buttons drop their text.
-    HEADER_TITLE_ROOM, HEADER_SEARCH_ROOM = 160, 260  # px kept for the folder name and search box
-
     def eventFilter(self, obj, event):
-        if obj is getattr(self, "right_box", None) and event.type() == QEvent.Resize:
-            self._fit_header(event.size().width())
+        if (obj is self.tree.viewport() and event.type() == QEvent.MouseButtonRelease
+                and event.button() == Qt.LeftButton):
+            # The + at the right of the "Folders" heading: a new top-level folder
+            item = self.tree.itemAt(event.position().toPoint())
+            if (item is not None and item.data(0, Qt.UserRole) == FOLDERS_HEADING and self._editable()
+                    and event.position().x() > self.tree.viewport().width() - 40):
+                self.new_folder(parent=None)
+                return True
         elif event.type() == QEvent.Wheel and event.modifiers() & Qt.ControlModifier:
             # Ctrl + wheel zooms the list text (one step per notch; touchpads send smaller amounts)
             self._wheel_zoom += event.angleDelta().y()
@@ -1476,48 +1783,41 @@ class VaultView(QWidget):
         i = LIST_TEXT_SIZES.index(self._list_text) + step
         self.set_list_text_size(LIST_TEXT_SIZES[max(0, min(len(LIST_TEXT_SIZES) - 1, i))])
 
-    DEFAULT_HIDDEN_COLUMNS = ["Created"]
+    # The Sort menu: (name, column, order)
+    SORTS = [("Name", EntryModel.TITLE, Qt.AscendingOrder), ("Username", EntryModel.USERNAME, Qt.AscendingOrder),
+             ("Website", EntryModel.WEBSITE, Qt.AscendingOrder), ("Folder", EntryModel.FOLDER, Qt.AscendingOrder),
+             ("Recently changed", EntryModel.MODIFIED, Qt.DescendingOrder),
+             ("Recently added", EntryModel.CREATED, Qt.DescendingOrder)]
 
-    def _hidden_columns(self):
-        hidden = settings.value("hidden_columns")
-        if hidden is None:
-            return list(self.DEFAULT_HIDDEN_COLUMNS)
-        if isinstance(hidden, str):  # QSettings returns a one-item list as a plain string
-            hidden = [hidden] if hidden else []
-        return [name for name in hidden if name in EntryModel.COLUMNS and name != "Title"]
+    def _saved_sort(self):
+        saved = str(setting("list_sort", ""))
+        for _name, column, order in self.SORTS:
+            if saved == f"{column},{order.value}":
+                return column, order
+        return EntryModel.TITLE, Qt.AscendingOrder
 
-    def _apply_hidden_columns(self):
-        hidden = self._hidden_columns()
-        header = self.table.horizontalHeader()
-        for col, name in enumerate(EntryModel.COLUMNS):
-            header.setSectionHidden(col, name in hidden)
-
-    def set_column_visible(self, name, visible):
-        hidden = [n for n in self._hidden_columns() if n != name] + ([] if visible else [name])
-        settings.setValue("hidden_columns", hidden if hidden else "")
-        self._apply_hidden_columns()
-
-    def _columns_menu(self, pos):
-        """Right-click a column heading: tick the columns to show (Title always stays)."""
-        menu = CheckableMenu(parent=self)  # draws a tick by the shown columns
-        hidden = self._hidden_columns()
-        for name in EntryModel.COLUMNS[1:]:
+    def _sort_menu(self):
+        menu = CheckableMenu(parent=self)  # ticks the current order
+        current = (self.model.sort_column, self.model.sort_order)
+        for name, column, order in self.SORTS:
             action = Action(name, checkable=True)
-            action.setChecked(name not in hidden)
-            action.triggered.connect(lambda checked, name=name: self.set_column_visible(name, checked))
+            action.setChecked((column, order) == current)
+            action.triggered.connect(lambda _=False, c=column, o=order: self.sort_by(c, o))
             menu.addAction(action)
-        menu.exec(self.table.horizontalHeader().mapToGlobal(pos), ani=False)
+        menu.exec(self.sort_btn.mapToGlobal(QPoint(0, self.sort_btn.height())), ani=False)
+
+    def sort_by(self, column, order):
+        settings.setValue("list_sort", f"{column},{order.value}")
+        current = self.current_entry()
+        self.table.sortByColumn(column, order)
+        self.refresh(select_uuid=current["uuid"] if current else None)
 
     def _scale_header(self, k):
-        """The titles, search box and buttons above the lists follow the list text size too, so the page
+        """The titles, search box and buttons around the list follow the list text size too, so the page
         stays in proportion (a small list under full-size buttons looked odd)."""
-        parts = [self.folders_title, self.new_folder_btn, self.list_title, self.count, self.save_status,
-                 self.search, self.reveal, self.check_btn, self.new_btn,
-                 self.notes.title, self.notes.path, self.notes.modified]
+        parts = [self.list_title, self.count, self.save_status, self.search, self.sort_btn, self.check_btn,
+                 self.new_btn, self.notes.title, self.notes.path, self.notes.modified]
         self.tree.setIconSize(QSize(round(16 * k), round(16 * k)))  # folder icons
-        # Column headings are drawn from the UI library's style sheet (12 px), not the header's font.
-        self._heading_px = max(9, round(12 * k))
-        self._table_qss()
         if not hasattr(self, "_header_base"):  # their normal sizes, measured once
             for part in parts:
                 part.ensurePolished()
@@ -1534,9 +1834,6 @@ class VaultView(QWidget):
                 part.setFixedHeight(round(fixed_height * k))
             if icon_size is not None:
                 part.setIconSize(QSize(round(icon_size.width() * k), round(icon_size.height() * k)))
-        self._header_limits = None  # the buttons' widths changed: re-measure when they drop their text
-        if hasattr(self, "right_box"):
-            self._fit_header(self.right_box.width())
 
     def set_list_text_size(self, size):
         """Text size (% of normal) of the entry list, folder tree and notes; rows grow with it."""
@@ -1544,74 +1841,41 @@ class VaultView(QWidget):
         settings.setValue("list_text_size", size)
         self._list_text = size
         k = size / 100
-        self.delegate.font.setPixelSize(round(13 * k))
-        self.delegate.italic.setPixelSize(round(13 * k))
-        self.delegate.mono.setPixelSize(round(14 * k))
+        self.delegate.font.setPixelSize(round(14 * k))
+        self.delegate.italic.setPixelSize(round(14 * k))
+        self.delegate.small.setPixelSize(round(13 * k))
         self.set_density(self._density)  # row height and icons follow the text
         # The UI library draws folder names in a fixed 13 px font unless an item carries its own.
         self._tree_font = getFont(round(13 * k))
         self._set_tree_icons()  # also gives every folder item the font
-        notes_qss = f"QPlainTextEdit {{ font-size: {round(self._notes_base_px * k)}px; }}"
-        setCustomStyleSheet(self.notes.notes, notes_qss, notes_qss)
+        self.notes.set_notes_px(round(self._notes_base_px * k))
         self._scale_header(k)
         self.table.viewport().update()
         self.listTextChanged.emit(size)
 
-    def _button_width(self, button, text):
-        """The width a button needs with this text, measured with whatever font this system uses."""
-        old = button.text()
-        button.setText(text)
-        width = button.sizeHint().width()
-        button.setText(old)
-        return width
-
-    def _header_widths(self):
-        """Panel widths below which 'Show passwords' and then 'New entry' drop their text."""
-        if getattr(self, "_header_limits", None) is None:
-            reveal_full = self._button_width(self.reveal, "Hide passwords")  # the longer of its two labels
-            reveal_icon = self._button_width(self.reveal, "")
-            new_full = self._button_width(self.new_btn, "New entry")
-            margins = self.right_box.layout().contentsMargins()
-            fixed = (self.HEADER_TITLE_ROOM + self.HEADER_SEARCH_ROOM + self.check_btn.sizeHint().width()
-                     + 4 * 8 + margins.left() + margins.right())  # 4 gaps of the header's 8 px spacing
-            self._header_limits = (fixed + reveal_full + new_full, fixed + reveal_icon + new_full)
-        return self._header_limits
-
-    def _fit_header(self, width):
-        """Keeps the header on one line without overlaps: as the panel narrows, the search box shrinks,
-        then "Show passwords" and "New entry" show only their icons (with tooltips). The limits come
-        from the buttons' measured widths, so they suit each system's font."""
-        reveal_limit, new_limit = self._header_widths()
-        reveal_icon_only, new_icon_only = width < reveal_limit, width < new_limit
-        if reveal_icon_only != self._reveal_icon_only:
-            self._reveal_icon_only = reveal_icon_only
-            self._on_reveal(self.reveal.isChecked())
-        self.new_btn.setText("" if new_icon_only else "New entry")
-
     def _scroll_gutters(self, *_):
         """The UI library's scrollbars float over the rows, so text showed around them: keep a strip
-        free for each scrollbar that's showing (they're 12 px, 1 px in from the edge)."""
+        free for each scrollbar that's showing (12 px, 1 px in from the edge of the borderless list)."""
         # Its style sheet sets the table's margins, so this goes there too.
         t = self.table
-        gutters = (12 if t.verticalScrollBar().maximum() > 0 else 0, 12 if t.horizontalScrollBar().maximum() > 0 else 0)
+        gutters = (13 if t.verticalScrollBar().maximum() > 0 else 0, 13 if t.horizontalScrollBar().maximum() > 0 else 0)
         if gutters != getattr(self, "_gutters", None):
             self._gutters = gutters
             self._table_qss()
 
     def _table_qss(self):
-        """The table's own style: scrollbar gutters and heading size together, since setting one
-        replaces the other (the gutters went when the text size was changed)."""
+        """The list's own style: room for its scrollbar (the list has no border of its own)."""
         right, bottom = getattr(self, "_gutters", (0, 0))
-        qss = (f"QTableView {{ padding-right: {right}px; padding-bottom: {bottom}px; }}"
-               f"QHeaderView::section {{ font-size: {getattr(self, '_heading_px', 12)}px; }}")
+        qss = (f"QTableView {{ padding-right: {right}px; padding-bottom: {bottom}px; border: none;"
+               f" background: transparent; }}")
         setCustomStyleSheet(self.table, qss, qss)
 
     def set_density(self, name):
         self._density = name
-        row_height, icon_size = ROW_DENSITIES.get(name, ROW_DENSITIES["Comfortable"])
+        row_height, tile = CARD_DENSITIES.get(name, CARD_DENSITIES["Comfortable"])
         k = getattr(self, "_list_text", 100) / 100  # rows and icons grow with the list text size
         self.table.verticalHeader().setDefaultSectionSize(round(row_height * k))
-        self.table.setIconSize(QSize(round(icon_size * k), round(icon_size * k)))
+        self.delegate.tile = round(tile * k)
         # The folder tree follows the same density (and text size), but never clips its text.
         font_px = round(13 * k)
         self._folder_row = max(round(FOLDER_ROW_HEIGHTS.get(name, 33) * k), font_px + 8)
@@ -1621,26 +1885,30 @@ class VaultView(QWidget):
 
     def set_colorize(self, on):
         self.delegate.colorize = on
-        self.table.viewport().update()
+        self.notes.set_revealed(self.notes.revealed)
 
     def toggle_password(self):
+        if self.current_entry():
+            self.notes.set_revealed(not self.notes.revealed)
+
+    def toggle_favourite(self):
         e = self.current_entry()
-        if e:
-            self.model.toggle_revealed(e)
+        if not e or not self._editable():
+            return
+        on = not e["favourite"]
+        self.window().saver.submit(Op("favourite", e["uuid"], fields={"on": on}, title=e["title"]),
+                                   f"{'Starring' if on else 'Unstarring'} “{e['title']}”")
 
     def _on_double_click(self, index):
+        """Double-clicking an entry copies its password, then (Settings → Minimise after double-click
+        copy) gets Vault out of the way, ready to paste. No password: opens it for editing."""
         self.table.selectRow(index.row())
         e = self.model.data(index, Qt.UserRole)
-        col = index.column()
-        if col in (EntryModel.USERNAME, EntryModel.PASSWORD):
-            field, label = ("username", "Username") if col == EntryModel.USERNAME else ("password", "Password")
-            if e[field]:
-                minimise = setting("minimise_on_copy", True)  # Settings → Minimise after double-click copy
-                self.window().copy_secret(e[field], label, notify=not minimise)
-                if minimise:
-                    self._minimise_after_release()
-        elif col == EntryModel.WEBSITE and e["url"]:
-            self.open_url()
+        if e["password"]:
+            minimise = setting("minimise_on_copy", True)
+            self.window().copy_secret(e["password"], "Password", notify=not minimise)
+            if minimise:
+                self._minimise_after_release()
         else:
             self.edit_entry()
 
@@ -1675,7 +1943,7 @@ class VaultView(QWidget):
     def new_entry(self):
         if not self._editable():
             return
-        folder = None if self.folder == self.db.bin_id else self.folder
+        folder = None if self.folder in (self.db.bin_id, FAVOURITES) else self.folder
         if folder and any(f["id"] == folder and f["in_bin"] for f in self.db.folders):
             folder = None
         editor = EntryEditor(self.window(), self.db, folder_id=folder)
@@ -1772,6 +2040,8 @@ class VaultView(QWidget):
             return
         if parent is False:
             parent = self.folder
+        if parent == FAVOURITES:
+            parent = None
         record = self._folder_record(parent)
         if record and record["in_bin"]:
             parent = None
@@ -1838,6 +2108,13 @@ class VaultView(QWidget):
         if not self._editable():
             return
         by_id = {e["uuid"]: e for e in self.db.entries}
+        if target == FAVOURITES:  # dropped on Favourites: starred, and left in their folders
+            starring = [by_id[u] for u in uuids if u in by_id and not by_id[u]["favourite"]]
+            names = ", ".join(f"“{e['title']}”" for e in starring[:3]) + (" …" if len(starring) > 3 else "")
+            self.window().saver.submit_many(
+                [Op("favourite", e["uuid"], fields={"on": True}, title=e["title"]) for e in starring],
+                f"Starring {names}")
+            return
         moving = [by_id[u] for u in uuids if u in by_id and by_id[u]["folder_id"] != target]
         if not moving:
             return
@@ -1877,7 +2154,7 @@ class VaultView(QWidget):
 
     def _folder_menu(self, pos):
         item = self.tree.itemAt(pos)
-        if item is None or not self._editable():
+        if item is None or not self._editable() or item.data(0, Qt.UserRole) in (FAVOURITES, FOLDERS_HEADING):
             return
         folder_id = item.data(0, Qt.UserRole)
         in_bin = bool(item.data(0, Qt.UserRole + 1))
@@ -1971,19 +2248,21 @@ class VaultView(QWidget):
                 action.setShortcut(QKeySequence(keys))
             action.setEnabled(bool(value))
             menu.addAction(action)
-        if not self.model.show_passwords:
-            menu.addSeparator()
-            shown = self.model.is_revealed(e)
-            action = Action(FIF.HIDE if shown else FIF.VIEW, "Hide password" if shown else "Show password",
-                            triggered=self.toggle_password)
-            action.setEnabled(bool(e["password"]))
-            menu.addAction(action)
+        menu.addSeparator()
+        shown = self.notes.revealed
+        action = Action(FIF.HIDE if shown else FIF.VIEW, "Hide password" if shown else "Show password",
+                        triggered=self.toggle_password)
+        action.setEnabled(bool(e["password"]))
+        menu.addAction(action)
         if e["totp"]:
             totp_action = Action(icon("STOP_WATCH", "HISTORY"), "Copy 2FA code", triggered=self.copy_totp)
             totp_action.setShortcut(QKeySequence("Ctrl+T"))
             menu.addAction(totp_action)
         if self._editable():
             menu.addSeparator()
+            menu.addAction(Action(star_icon(not e["favourite"]),
+                                  "Remove from Favourites" if e["favourite"] else "Add to Favourites",
+                                  triggered=self.toggle_favourite))
             edit = Action(FIF.EDIT, "Edit…", triggered=self.edit_entry)
             edit.setShortcut(QKeySequence("Enter"))
             menu.addAction(edit)
@@ -3574,14 +3853,19 @@ class HealthView(QWidget):
     """Password health report: weak, reused, empty, expired and old passwords."""
 
     COLUMNS = ["Problem", "Title", "Username", "Folder", "Details"]
+    updated = Signal()  # a check finished (or the database closed): the score and labels can change
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setObjectName("view-health")
         self.db = None
         self.issues = []
+        self._by_entry, self.checked = {}, False
+        self._strengths = {}  # {password: bits} until locked, so checks after an edit are quick
         self.filter = None
         self.dirty = True
+        # After unlocking or an edit, checked a little later (zxcvbn takes a moment for big databases)
+        self.check_timer = QTimer(self, singleShot=True, interval=1500, timeout=self.refresh)
         root = QVBoxLayout(self)
         root.setContentsMargins(36, 28, 36, 28)
         root.setSpacing(14)
@@ -3637,9 +3921,17 @@ class HealthView(QWidget):
         self.dirty = True
         if db is None:
             self.issues = []
+            self._by_entry, self.checked = {}, False
+            self._strengths = {}  # new dict: a check still running keeps its own (and then drops it)
+            self.check_timer.stop()
             self._show()
+            self.updated.emit()
         elif self.isVisible():
             self.refresh()
+        else:  # for the sidebar's score and the password labels: soon, in the background
+            self.check_timer.start()
+            if not self.checked:
+                self.updated.emit()  # "Checking…"
 
     def showEvent(self, event):
         super().showEvent(event)
@@ -3650,16 +3942,40 @@ class HealthView(QWidget):
         if self.db is None:
             return
         self.dirty = False
+        self.check_timer.stop()
         entries = list(self.db.entries)
         self.empty.setText("Checking passwords…")
-        run_in_background(self, lambda: health.report(entries), self._done)
+        db, cache = self.db, self._strengths
+        run_in_background(self, lambda: health.report(entries, strength_cache=cache),
+                          lambda issues, error: self._done(db, issues, error))
 
-    def _done(self, issues, error):
+    def _done(self, db, issues, error):
+        if db is not self.db:  # locked or reloaded meanwhile
+            return
         if error:
             self.empty.setText(f"Couldn't check passwords: {error}")
             return
         self.issues = issues or []
+        self._by_entry = {}
+        for issue in self.issues:
+            self._by_entry.setdefault(issue["entry"]["uuid"], {})[issue["issue"]] = (
+                issue["detail"] or health.ISSUES[issue["issue"]][0])
+        self.checked = True
         self._show()
+        self.updated.emit()
+
+    def problems(self, uuid):
+        """An entry's problems as {issue: detail} ({} if none), or None until the check has run."""
+        return self._by_entry.get(uuid, {}) if self.checked else None
+
+    def score(self):
+        """(0-100, entries to fix), or None until the check has run. Passwords that are only old
+        don't lower the score; weak, reused, missing and expired ones do."""
+        if not self.checked or self.db is None:
+            return None
+        live = [e for e in self.db.entries if not e["in_bin"] and not e["backup"]]
+        to_fix = {i["entry"]["uuid"] for i in self.issues if i["issue"] != "old"}
+        return (round(100 * (len(live) - len(to_fix)) / len(live)) if live else 100), len(to_fix)
 
     def _toggle_filter(self, issue):
         self.filter = None if self.filter == issue else issue
@@ -3761,7 +4077,7 @@ class SettingsView(ScrollArea):
             "Clear clipboard after", "How long copied usernames, passwords and 2FA codes stay on the clipboard "
             "before Vault wipes them.", clipboard))
         root.addWidget(self._row(
-            "Minimise after double-click copy", "Double-clicking a username or password copies it and gets Vault "
+            "Minimise after double-click copy", "Double-clicking an entry copies its password and gets Vault "
             "out of the way, ready to paste. Off: Vault stays open.", self._bool_switch("minimise_on_copy")))
         idle = ComboBox()
         idle.addItems(list(IDLE_LOCK_CHOICES))
@@ -3788,11 +4104,11 @@ class SettingsView(ScrollArea):
             "When shown, colour uppercase, lowercase, digits and symbols differently.",
             self._bool_switch("color_passwords", on_colorize)))
         density = ComboBox()
-        density.addItems(list(ROW_DENSITIES))
+        density.addItems(list(CARD_DENSITIES))
         density.setCurrentText(setting("row_density", "Comfortable"))
         density.currentTextChanged.connect(lambda name: settings.setValue("row_density", name))
         density.currentTextChanged.connect(on_density)
-        root.addWidget(self._row("Row density", "How tightly entries are packed in the table.", density))
+        root.addWidget(self._row("Row density", "How tightly entries are packed in the list.", density))
 
         root.addSpacing(8)
         root.addWidget(SubtitleLabel("Database"))
@@ -4158,8 +4474,163 @@ class PrivacyCover(QWidget):
         return img
 
 
+class SideButton(QAbstractButton):
+    """A sidebar row below the folders (Settings): highlighted, like a folder row, while its page shows."""
+
+    def __init__(self, fluent_icon, text, parent=None):
+        super().__init__(parent)
+        self.fluent_icon = fluent_icon
+        self.setText(text)
+        self.setCheckable(True)
+        self.setFixedHeight(36)
+        self.setAttribute(Qt.WA_Hover)
+        self.setFocusPolicy(Qt.NoFocus)
+
+    def event(self, e):
+        if e.type() in (QEvent.HoverEnter, QEvent.HoverLeave):
+            self.update()
+        return super().event(e)
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        c = 255 if isDarkTheme() else 0
+        r = QRectF(self.rect()).adjusted(4, 2, -4, -2)
+        if self.isChecked() or self.underMouse():
+            p.setBrush(QColor(c, c, c, 15 if self.isChecked() else 9))
+            p.drawRoundedRect(r, 5, 5)
+        if self.isChecked():
+            p.setBrush(QColor(themeColor()))
+            p.drawRoundedRect(QRectF(r.x(), r.y() + r.height() * 0.27, 3, r.height() * 0.46), 1.5, 1.5)
+        s = 16
+        self.fluent_icon.render(p, QRect(int(r.x()) + 14, (self.height() - s) // 2, s, s))
+        p.setPen(QColor(Qt.white if c else Qt.black))
+        p.setFont(getFont(14))
+        p.drawText(r.adjusted(44, 0, 0, 0), Qt.AlignLeft | Qt.AlignVCenter, self.text())
+
+
+class HealthButton(QAbstractButton):
+    """The sidebar's Password health card: a ring with the score, and how many entries need fixing."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.score, self.to_fix, self.open = None, 0, False
+        self.setCheckable(True)
+        self.setFixedHeight(64)
+        self.setAttribute(Qt.WA_Hover)
+        self.setFocusPolicy(Qt.NoFocus)
+        self.setToolTip("Weak, reused, missing and expired passwords")
+
+    def event(self, e):
+        if e.type() in (QEvent.HoverEnter, QEvent.HoverLeave):
+            self.update()
+        return super().event(e)
+
+    def set_score(self, result, open_db):
+        """result: (score 0-100, entries to fix) or None while checking (or locked)."""
+        self.score, self.to_fix = result if result else (None, 0)
+        self.open = open_db
+        self.update()
+
+    @staticmethod
+    def rating(score):
+        if score >= 90:
+            return "Excellent", QColor("#107c10"), QColor("#6ccb5f")
+        if score >= 75:
+            return "Good", QColor(themeColor()), QColor(themeColor())
+        if score >= 50:
+            return "Fair", QColor("#ca5010"), QColor("#f7894a")
+        return "Needs work", QColor("#d13438"), QColor("#ff99a4")
+
+    def paintEvent(self, _event):
+        p = QPainter(self)
+        p.setRenderHint(QPainter.Antialiasing)
+        dark = isDarkTheme()
+        c = 255 if dark else 0
+        r = QRectF(self.rect()).adjusted(4.5, 1.5, -4.5, -1.5)
+        p.setBrush(QColor(255, 255, 255, (16 if self.underMouse() else 10) if dark else (230 if self.underMouse() else 170)))
+        p.setPen(QPen(QColor(themeColor()) if self.isChecked() else QColor(c, c, c, 24), 1.2))
+        p.drawRoundedRect(r, 8, 8)
+
+        ring = QRectF(r.x() + 12, r.center().y() - 17, 34, 34)
+        p.setBrush(Qt.NoBrush)
+        p.setPen(QPen(QColor(c, c, c, 28), 4))
+        p.drawEllipse(ring)
+        if self.score is not None:
+            label, light, dark_color = self.rating(self.score)
+            pen = QPen(dark_color if dark else light, 4)
+            pen.setCapStyle(Qt.RoundCap)
+            p.setPen(pen)
+            p.drawArc(ring, 90 * 16, -round(360 * 16 * self.score / 100))
+            font = getFont(12, QFont.DemiBold)
+            p.setFont(font)
+            p.setPen(QColor(Qt.white if dark else Qt.black))
+            p.drawText(ring, Qt.AlignCenter, str(self.score))
+            if self.to_fix:
+                detail = f"{label} · {self.to_fix} to fix"
+            else:
+                detail = f"{label} · nothing to fix"
+        else:
+            detail = "Checking…" if self.open else ""
+        x = ring.right() + 12
+        p.setPen(QColor(Qt.white if dark else Qt.black))
+        p.setFont(getFont(14, QFont.DemiBold))
+        p.drawText(QRectF(x, r.y() + 11, r.right() - x - 6, 20), Qt.AlignLeft | Qt.AlignVCenter, "Password health")
+        p.setPen(QColor("#a3a9af" if dark else "#5c656d"))
+        p.setFont(getFont(12))
+        p.drawText(QRectF(x, r.y() + 32, r.right() - x - 6, 18), Qt.AlignLeft | Qt.AlignVCenter, detail)
+
+
+class Sidebar(QWidget):
+    """The window's left column: New entry; All entries, Favourites and the folders; then Password
+    health (with its score) and Settings."""
+
+    def __init__(self, window):
+        super().__init__(window)
+        self.main = window
+        vault = window.vault
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(10, 50, 6, 12)  # below the title bar
+        layout.setSpacing(2)
+        vault.new_btn.setFixedHeight(38)
+        new_row = QHBoxLayout()
+        new_row.setContentsMargins(4, 0, 4, 0)
+        new_row.addWidget(vault.new_btn)
+        layout.addLayout(new_row)
+        layout.addSpacing(10)
+        layout.addWidget(vault.tree, 1)
+        layout.addSpacing(8)
+        self.health = HealthButton()
+        self.health.clicked.connect(lambda: window.switchTo(window.health))
+        layout.addWidget(self.health)
+        layout.addSpacing(4)
+        self.settings = SideButton(FIF.SETTING, "Settings")
+        self.settings.clicked.connect(lambda: window.switchTo(window.settings_view))
+        layout.addWidget(self.settings)
+        window.stackedWidget.currentChanged.connect(self.update_selection)
+        self.setFixedWidth(250)
+
+    def update_selection(self, *_):
+        page = self.main.stackedWidget.currentWidget()
+        self.health.setChecked(page is self.main.health)
+        self.settings.setChecked(page is self.main.settings_view)
+        self.main.vault.folder_delegate.inactive = page is not self.main.vault
+        self.main.vault.tree.viewport().update()
+
+    def fit(self):
+        """Wide enough for the longest folder name and its count (between 230 and 340 px)."""
+        tree = self.main.vault.tree
+        if not tree.topLevelItemCount():
+            return
+        margins = self.layout().contentsMargins()
+        wanted = tree.sizeHintForColumn(0) + 36 + margins.left() + margins.right()
+        self.setFixedWidth(max(230, min(340, wanted)))
+
+
 class MainWindow(FluentWindow):
     COVER_DELAY_MS = 150  # time for the covered frame to reach the screen before minimising
+    _locked = True  # see the `locked` property
 
     def __init__(self):
         use_system_ui_font()  # before any widget asks for a font
@@ -4196,6 +4667,19 @@ class MainWindow(FluentWindow):
                                           on_find_icons=self.find_icons_by_name)
         self.addSubInterface(self.settings_view, FIF.SETTING, "Settings", NavigationItemPosition.BOTTOM)
         self.vault.listTextChanged.connect(self.settings_view.show_list_text_size)
+        # The sidebar (folders, Password health, Settings) instead of the UI library's icon strip,
+        # and the search box and lock button in the title bar
+        self.navigationInterface.hide()
+        self.sidebar = Sidebar(self)
+        self.hBoxLayout.insertWidget(0, self.sidebar)
+        self._setup_title_bar()
+        self.health.updated.connect(self._on_health_checked)
+        for keys, action in (("Ctrl+F", self.vault.focus_search), ("Ctrl+K", self.vault.focus_search),
+                             ("Ctrl+N", self.vault.new_entry), ("Ctrl+Z", self.vault.undo),
+                             ("F5", self.vault.check_for_changes), ("Ctrl+L", self.lock)):
+            shortcut = QShortcut(QKeySequence(keys), self)
+            shortcut.setContext(Qt.WindowShortcut)
+            shortcut.activated.connect(lambda action=action: self._unlocked_shortcut(action))
         self.icons = IconFetcher(self)
         self.idle = IdleWatcher(idle_lock_minutes(), self._on_idle)
         # Lock with the computer (locking, sleep, switching user); see systemlock.py.
@@ -4219,6 +4703,50 @@ class MainWindow(FluentWindow):
         full_screen.setKeys(QKeySequence.StandardKey.FullScreen)
         full_screen.setContext(Qt.WindowShortcut)
         full_screen.activated.connect(self.toggle_full_screen)
+
+    def _setup_title_bar(self):
+        """The search box, centred in the title bar, and a lock button by the window buttons. Both
+        hide while Vault is locked (the title bar stays above the unlock screen)."""
+        bar = self.titleBar
+        search = self.vault.search
+        search.setMinimumWidth(220)
+        search.setMaximumWidth(520)
+        search.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        i = bar.hBoxLayout.indexOf(bar.titleLabel) + 1
+        bar.hBoxLayout.insertStretch(i, 1)
+        bar.hBoxLayout.insertWidget(i + 1, search, 0, Qt.AlignVCenter)
+        self.lock_btn = TransparentToolButton(AppIcon("lock"))
+        self.lock_btn.setToolTip(shortcut_text("Lock (Ctrl+L)"))
+        self.lock_btn.setFocusPolicy(Qt.NoFocus)
+        self.lock_btn.clicked.connect(self.lock)
+        right = bar.hBoxLayout.count() - 1  # before the window buttons
+        bar.hBoxLayout.insertWidget(right, self.lock_btn, 0, Qt.AlignVCenter)
+        bar.hBoxLayout.insertSpacing(right + 1, 10)
+        if sys.platform != "darwin":
+            bar.hBoxLayout.setContentsMargins(16, 0, 0, 0)
+        # Searching from Password health or Settings shows the list again
+        search.textChanged.connect(lambda text: text and self.vault._show_page())
+        self.locked = self.locked  # hides them for now
+
+    @property
+    def locked(self):
+        return self._locked
+
+    @locked.setter
+    def locked(self, value):
+        self._locked = value
+        if hasattr(self, "lock_btn"):  # the search box and lock button only while unlocked
+            self.vault.search.setVisible(not value)
+            self.lock_btn.setVisible(not value)
+
+    def _unlocked_shortcut(self, action):
+        """Window-wide shortcuts work only while unlocked, and not behind an open dialog."""
+        if not self.locked and QApplication.activeModalWidget() is None:
+            action()
+
+    def _on_health_checked(self):
+        self.sidebar.health.set_score(self.health.score(), self.health.db is not None)
+        self.vault.notes.update_chip()
 
     def toggle_full_screen(self):
         if self.isFullScreen():
@@ -4254,9 +4782,9 @@ class MainWindow(FluentWindow):
             self._native_traffic_lights = True
         except Exception:  # fall back to placing them by hand (systemTitleBarRect)
             self._native_traffic_lights = False
-        # The traffic lights take the top-left 74 px (see systemTitleBarRect; the title bar starts
-        # 46 px in) and are centred 20 px down: start the title after them and centre it on their row.
-        bar.hBoxLayout.setContentsMargins(46, 0, 0, 8)
+        # The traffic lights take the top-left 74 px (see systemTitleBarRect) and are centred 20 px
+        # down: start the title after them and centre it on their row.
+        bar.hBoxLayout.setContentsMargins(92, 0, 0, 8)
         # The sidebar's Back arrow sat where the traffic lights go; Vault doesn't need page history.
         self.navigationInterface.setReturnButtonVisible(False)
         self.navigationInterface.panel.vBoxLayout.setContentsMargins(0, 34, 0, 5)
@@ -4352,7 +4880,7 @@ class MainWindow(FluentWindow):
 
     def _live_resize_widgets(self):
         v, bar = self.vault, self.titleBar
-        return [v.search, v.reveal, v.check_btn, v.new_btn, bar.minBtn, bar.maxBtn, bar.closeBtn]
+        return [v.search, v.sort_btn, v.check_btn, self.lock_btn, bar.minBtn, bar.maxBtn, bar.closeBtn]
 
     def _set_live_resize(self, on):
         self._live_resize = on
@@ -4364,6 +4892,9 @@ class MainWindow(FluentWindow):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        # The title bar spans the whole window (the UI library starts it after its icon strip)
+        self.titleBar.move(0, 0)
+        self.titleBar.resize(self.width(), self.titleBar.height())
         if hasattr(self, "privacy_cover") and self.privacy_cover.isVisible():
             self.privacy_cover.setGeometry(self.rect())
         if sys.platform == "win32" and getattr(self, "locked", False):

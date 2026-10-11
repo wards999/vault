@@ -52,7 +52,10 @@ def settle(ms=600):
 def screen_matches_render(label):
     """Compares what's on screen (composited) with Vault's own rendering, sampling a grid of pixels."""
     settle()
-    shot = w.screen().grabWindow(0, w.x(), w.y(), w.width(), w.height()).toImage()
+    # The window itself: Qt's frame position (w.x()) is 8 px off for this frameless window, which went
+    # unnoticed while the window was mostly plain table rows.
+    g = w.geometry()
+    shot = w.screen().grabWindow(0, g.x(), g.y(), g.width(), g.height()).toImage()
     own = w.grab().toImage()
     ratio = shot.width() / max(1, own.width())
     diff = total = 0

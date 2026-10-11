@@ -32,7 +32,7 @@ def pick(w, name):
 
 
 w, db = open_window(a)
-print(ok(w.vault.list_title.text() == db.name), "first time: opens at the top level:", w.vault.list_title.text())
+print(ok(w.vault.list_title.text() == "All entries"), "first time: opens at the top level:", w.vault.list_title.text())
 pick(w, "Cards")
 w.close()
 w, db = open_window(a)
@@ -40,7 +40,7 @@ print(ok(w.vault.list_title.text() == "Cards"), "reopened database A: back in", 
 w.close()
 
 w, db = open_window(b)
-print(ok(w.vault.list_title.text() == db.name), "database B has its own memory (top level):", w.vault.list_title.text())
+print(ok(w.vault.list_title.text() == "All entries"), "database B has its own memory (top level):", w.vault.list_title.text())
 pick(w, "Work")
 w.close()
 w, _ = open_window(a)
@@ -61,7 +61,7 @@ for _ in range(200):
 print(ok(not w.saver.pending), "folder move saved")
 w.close()
 w, db = open_window(a)
-print(ok(w.vault.list_title.text() == db.name), "remembered folder now in the Recycle Bin -> top level:", w.vault.list_title.text())
+print(ok(w.vault.list_title.text() == "All entries"), "remembered folder now in the Recycle Bin -> top level:", w.vault.list_title.text())
 
 # remembered the Recycle Bin itself -> reopens it
 pick(w, "Recycle Bin")

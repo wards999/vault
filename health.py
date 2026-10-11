@@ -27,9 +27,10 @@ def _age_text(days):
     return f"{days} days ago"
 
 
-def report(entries, now=None):
+def report(entries, now=None, strength_cache=None):
     """List of issue dicts: {issue, entry, detail, sort} for entries outside the Recycle Bin and
-    Backup folders (old copies there would just show up as "reused" alongside the live entry)."""
+    Backup folders (old copies there would just show up as "reused" alongside the live entry).
+    strength_cache: {password: bits} kept between checks, so unchanged passwords aren't measured again."""
     now = now or datetime.now(timezone.utc)
     live = [e for e in entries if not e["in_bin"] and not e["backup"]]
     by_password = defaultdict(list)
@@ -38,7 +39,7 @@ def report(entries, now=None):
             by_password[e["password"]].append(e)
 
     issues = []
-    strength_cache = {}
+    strength_cache = {} if strength_cache is None else strength_cache
     for e in live:
         password = e["password"]
         if not password:

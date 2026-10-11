@@ -4,7 +4,7 @@ import sys
 import helpers  # repo path; temporary folder, settings and test databases
 from helpers import ok, finish
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QStyleOptionViewItem
+from PySide6.QtWidgets import QApplication
 from pykeepass import create_database
 
 app = QApplication(sys.argv)
@@ -35,10 +35,8 @@ model, delegate = v.model, v.delegate
 
 def looks(password):
     row = next(i for i, e in enumerate(model.entries) if e["password"] == password)
-    index = model.index(row, 0)
-    option = QStyleOptionViewItem()
-    delegate.initStyleOption(option, index)
-    return option.font.italic(), model.data(index, vault.R_FOREGROUND) == vault.EXPIRED_COLOR
+    font, color = delegate.title_style(model.entries[row])  # how the card draws its title
+    return font.italic(), color == vault.EXPIRED_COLOR
 
 
 v.folder = None; v.refresh()
