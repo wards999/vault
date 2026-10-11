@@ -1516,8 +1516,8 @@ class VaultView(QWidget):
                  self.notes.title, self.notes.path, self.notes.modified]
         self.tree.setIconSize(QSize(round(16 * k), round(16 * k)))  # folder icons
         # Column headings are drawn from the UI library's style sheet (12 px), not the header's font.
-        heading_qss = f"QHeaderView::section {{ font-size: {max(9, round(12 * k))}px; }}"
-        setCustomStyleSheet(self.table, heading_qss, heading_qss)
+        self._heading_px = max(9, round(12 * k))
+        self._table_qss()
         if not hasattr(self, "_header_base"):  # their normal sizes, measured once
             for part in parts:
                 part.ensurePolished()
@@ -1596,8 +1596,15 @@ class VaultView(QWidget):
         gutters = (12 if t.verticalScrollBar().maximum() > 0 else 0, 12 if t.horizontalScrollBar().maximum() > 0 else 0)
         if gutters != getattr(self, "_gutters", None):
             self._gutters = gutters
-            qss = f"QTableView {{ padding-right: {gutters[0]}px; padding-bottom: {gutters[1]}px; }}"
-            setCustomStyleSheet(t, qss, qss)
+            self._table_qss()
+
+    def _table_qss(self):
+        """The table's own style: scrollbar gutters and heading size together, since setting one
+        replaces the other (the gutters went when the text size was changed)."""
+        right, bottom = getattr(self, "_gutters", (0, 0))
+        qss = (f"QTableView {{ padding-right: {right}px; padding-bottom: {bottom}px; }}"
+               f"QHeaderView::section {{ font-size: {getattr(self, '_heading_px', 12)}px; }}")
+        setCustomStyleSheet(self.table, qss, qss)
 
     def set_density(self, name):
         self._density = name
