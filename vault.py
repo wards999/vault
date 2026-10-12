@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QApplication, QAbstractButton, QLabel, QWidget, QHBoxLayout, QVBoxLayout, QTreeWidgetItem, QTreeWidgetItemIterator,
     QFileDialog, QHeaderView, QAbstractItemView, QSplitter, QSplitterHandle, QLineEdit, QTableWidgetItem,
     QStyledItemDelegate, QDialog, QGraphicsDropShadowEffect, QSizePolicy, QGridLayout, QButtonGroup,
-    QStyle, QStyleOptionViewItem, QToolTip, QStackedWidget,
+    QStyle, QStyleOptionViewItem, QToolTip, QStackedWidget, QFrame,
 )
 from qfluentwidgets import (
     FluentWindow, NavigationItemPosition, FluentIcon as FIF, setTheme, Theme,
@@ -92,7 +92,7 @@ def idle_lock_minutes():
     return minutes if minutes in IDLE_LOCK_CHOICES.values() else 5
 CLIPBOARD_CHOICES = {"Never": 0, "10 seconds": 10, "20 seconds": 20, "30 seconds": 30,
                      "1 minute": 60, "2 minutes": 120, "5 minutes": 300}
-CARD_DENSITIES = {"Compact": (32, 22), "Comfortable": (38, 26), "Spacious": (46, 30)}  # card height, icon size
+CARD_DENSITIES = {"Compact": (26, 18), "Comfortable": (38, 26), "Spacious": (46, 30)}  # card height, icon size
 FOLDER_ROW_HEIGHTS = {"Compact": 22, "Comfortable": 33, "Spacious": 42}  # the folder tree's rows, per density
 AVATAR_COLORS = ["#0f6cbd", "#c239b3", "#038387", "#ca5010", "#8764b8", "#498205", "#d13438", "#4f6bed"]
 
@@ -532,6 +532,7 @@ class EntryDelegate(TableItemDelegate):
         super().__init__(view)
         self.model = model
         self.colorize = setting("color_passwords", True)  # for the details pane's password
+        self.stripes = setting("list_stripes", True)  # Settings → Striped list
         self.font = getFont(13)  # the same as the folders' (and set_list_text_size scales both)
         self.small = getFont(13)
         self.italic = QFont(self.font)  # old copies in a Backup folder
@@ -584,6 +585,8 @@ class EntryDelegate(TableItemDelegate):
             fill.setAlpha(52 if dark else 36)
         elif index.row() in (self.hoverRow, self.pressedRow):
             fill = QColor(255, 255, 255, 14) if dark else QColor(0, 0, 0, 11)
+        elif self.stripes and index.row() % 2:  # zebra stripes: every other row faintly shaded
+            fill = QColor(255, 255, 255, 6) if dark else QColor(0, 0, 0, 7)
         else:
             fill = None
         if fill is not None:
@@ -1319,8 +1322,20 @@ class NotesPanel(QWidget):
             fields.addWidget(row)
         root.addWidget(self.card)
 
+        # Below the fields: the notes, then a divider (drag it; it's remembered), then the activity
+        details = root
+        notes_box, activity_box = QWidget(), QWidget()
+        for box in (notes_box, activity_box):
+            box.setMinimumHeight(60)
+        self.details_splitter = GripSplitter(Qt.Vertical, "details_splitter", [notes_box, activity_box], [420, 150])
+        self.details_splitter.setHandleWidth(14)
+        details.addSpacing(16)
+        details.addWidget(self.details_splitter, 1)
+
         # The notes, typed straight in here (saved a moment after typing stops)
-        root.addSpacing(18)
+        root = QVBoxLayout(notes_box)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
         self.notes_label = caption("Notes")
         root.addWidget(self.notes_label)
         root.addSpacing(4)
@@ -1333,12 +1348,39 @@ class NotesPanel(QWidget):
         self.notes.installEventFilter(self)  # leaving the notes saves them straight away
         self._loading_notes = False
         root.addWidget(self.notes, 1)
+        # Notes are hidden like passwords (they often hold PINs, security answers…): dots until shown
+        # with the eye, Show passwords, or a click here
+        self.notes_mask = PlainTextEdit()
+        self.notes_mask.setReadOnly(True)
+        self.notes_mask.setPlainText("•" * 12)
+        self.notes_mask.setToolTip("Click to show the notes")
+        self.notes_mask.setMinimumHeight(70)
+        self.notes_mask.viewport().setCursor(Qt.PointingHandCursor)
+        self.notes_mask.viewport().installEventFilter(self)
+        self.notes_mask.hide()
+        self._notes_shown = False  # shown with a click, for this entry
+        root.addWidget(self.notes_mask, 1)
 
-        # When it was made and changed, its last few changes, and other entries for the same site
-        root.addSpacing(14)
+        # When it was made and changed, its last few changes, and other entries for the same site (they
+        # scroll if there are more than the divider leaves room for)
+        root = QVBoxLayout(activity_box)
+        root.setContentsMargins(0, 0, 0, 0)
+        root.setSpacing(0)
         self.activity_label = caption("Activity")
         root.addWidget(self.activity_label)
         root.addSpacing(4)
+        self.more = QWidget(objectName="moreDetails")
+        self.more.setStyleSheet("QWidget#moreDetails { background: transparent; }")
+        self.more_scroll = ScrollArea()
+        self.more_scroll.setWidget(self.more)
+        self.more_scroll.setWidgetResizable(True)
+        self.more_scroll.enableTransparentBackground()
+        self.more_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.more_scroll.setFrameShape(QFrame.NoFrame)
+        root.addWidget(self.more_scroll, 1)
+        root = QVBoxLayout(self.more)  # the rest goes in there
+        root.setContentsMargins(0, 0, 14, 0)  # room for the scroll bar
+        root.setSpacing(0)
         self.dates = caption("")
         self.dates.setWordWrap(True)
         root.addWidget(self.dates)
@@ -1350,23 +1392,23 @@ class NotesPanel(QWidget):
         self.advice_text = CaptionLabel("")
         self.advice_text.setWordWrap(True)
         advice.addWidget(self.advice_text, 1)
-        self.advice_btn = HyperlinkButton(url="", text="Change password")
-        self.advice_btn.setToolTip("Edit the entry with a newly generated password")
-        self.advice_btn.clicked.connect(lambda: vault().change_password())
-        self._small(self.advice_btn)
+        self.advice_btn = self._link("Change password", lambda: vault().change_password(),
+                                     "Edit the entry with a newly generated password")
         advice.addWidget(self.advice_btn, 0, Qt.AlignVCenter)
         root.addWidget(self.advice)
         self.changes = QVBoxLayout()
-        self.changes.setSpacing(0)
+        self.changes.setSpacing(2)
         root.addLayout(self.changes)
         self.related_label = caption("")
         root.addSpacing(10)
         root.addWidget(self.related_label)
         self.related = QVBoxLayout()  # one per line, so long names don't run into each other
-        self.related.setSpacing(0)
+        self.related.setSpacing(2)
         root.addLayout(self.related)
+        root.addStretch(1)
         qconfig.themeChanged.connect(lambda: self.set_entry(self.entry))
         self.set_entry(None)
+
 
     # ---- the folder, chosen in place
 
@@ -1398,7 +1440,34 @@ class NotesPanel(QWidget):
     def eventFilter(self, obj, event):
         if obj is self.notes and event.type() == QEvent.FocusOut:
             self.save_notes()
+            self._hide_clicked_notes()
+        elif (event.type() == QEvent.MouseButtonPress and self._notes_shown and isinstance(obj, QWidget)
+              and obj is not self.notes and not self.notes.isAncestorOf(obj)):
+            # Shown with a click: a click anywhere else hides them again (not only one that moves the
+            # keyboard focus: clicking a label or empty space doesn't)
+            self.save_notes()
+            self._hide_clicked_notes()
+        elif (event.type() == QEvent.MouseButtonRelease and hasattr(self, "notes_mask")
+              and obj is self.notes_mask.viewport()):
+            self._notes_shown = True
+            QApplication.instance().installEventFilter(self)  # watch for clicks elsewhere (see above)
+            self._mask_notes()
+            self.notes.setFocus()
+            return True
         return super().eventFilter(obj, event)
+
+    def _hide_clicked_notes(self):
+        if self._notes_shown:
+            self._notes_shown = False
+            QApplication.instance().removeEventFilter(self)
+            self._mask_notes()
+
+    def _mask_notes(self):
+        """Dots instead of the notes, unless they're shown (eye, Show passwords or a click) or empty."""
+        e = self.entry
+        hidden = bool(e and e["notes"] and not (self.revealed or self._notes_shown))
+        self.notes.setVisible(e is not None and not hidden)
+        self.notes_mask.setVisible(hidden)
 
     def save_notes(self):
         """Saves notes typed here (as an edit of the entry: undoable, kept in its history)."""
@@ -1447,7 +1516,7 @@ class NotesPanel(QWidget):
             item = self.related.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        for part in (self.activity_label, self.dates):
+        for part in (self.activity_label, self.more_scroll):
             part.setVisible(e is not None)
         self.related_label.hide()
         if e is None:
@@ -1467,10 +1536,8 @@ class NotesPanel(QWidget):
             changed = [label for key, label in names.items() if (newer.get(key) or "") != (version.get(key) or "")]
             stamp = e["modified"] if when is None else when.strftime("%b %d, %Y %H:%M")
             if changed:
-                link = HyperlinkButton(url="", text=f"{stamp}: {', '.join(changed)} changed")
-                link.setToolTip("See the earlier versions (History)")
-                link.clicked.connect(lambda: self.window().vault.show_history())
-                self._small(link)
+                link = self._link(f"{stamp}: {', '.join(changed)} changed", lambda: self.window().vault.show_history(),
+                                  "See the earlier versions (History)")
                 self.changes.addWidget(link, 0, Qt.AlignLeft)
                 shown += 1
             newer, when = version, version["modified"]
@@ -1487,15 +1554,12 @@ class NotesPanel(QWidget):
         self.related_label.setVisible(bool(related))
         self.related_label.setText(f"Also for “{key}” ({len(related)}):")
         for other in related[:8]:
-            link = HyperlinkButton(url="", text=other["title"] + (f" ({other['username']})" if other["username"] else ""))
-            link.clicked.connect(lambda _=False, u=other["uuid"]: self.window().show_entry(u))
-            self._small(link)
+            link = self._link(other["title"] + (f" ({other['username']})" if other["username"] else ""),
+                              lambda u=other["uuid"]: self.window().show_entry(u))
             self.related.addWidget(link, 0, Qt.AlignLeft)
         if len(related) > 8:
-            more = HyperlinkButton(url="", text=f"… and {len(related) - 8} more")
-            more.setToolTip(f"Search for {key}")
-            more.clicked.connect(lambda: self.window().vault.search.setText(key))
-            self._small(more)
+            more = self._link(f"… and {len(related) - 8} more", lambda: self.window().vault.search.setText(key),
+                              f"Search for {key}")
             self.related.addWidget(more, 0, Qt.AlignLeft)
 
     @staticmethod
@@ -1513,10 +1577,23 @@ class NotesPanel(QWidget):
             word = (re.findall(r"[a-z0-9]+", e["title"].lower()) or [""])[0]
         return word if len(word) >= 3 else ""
 
-    def _small(self, link):
-        font = link.font()
+    def _small(self, label):
+        font = label.font()
         font.setPixelSize(max(9, round(12 * self.text_scale)))
-        link.setFont(font)
+        label.setFont(font)
+
+    def _link(self, text, on_click, tip=""):
+        """A small clickable line of text in the accent colour, one line high (the UI library's link
+        buttons are as tall as buttons, and clipped their text when squeezed)."""
+        link = QLabel()
+        link.setTextFormat(Qt.RichText)
+        escaped = text.replace("&", "&amp;").replace("<", "&lt;")
+        link.setText(f'<a href="#" style="color:{QColor(themeColor()).name()}; text-decoration:none">{escaped}</a>')
+        link.setCursor(Qt.PointingHandCursor)
+        link.setToolTip(tip)
+        link.linkActivated.connect(lambda _href: on_click())
+        self._small(link)
+        return link
 
     text_scale = 1.0  # Settings → List text size (1.0 = 100%)
 
@@ -1601,8 +1678,11 @@ class NotesPanel(QWidget):
         same = e is not None and self.entry is not None and e["uuid"] == self.entry["uuid"]
         if not same and self.notes_timer.isActive():
             self.save_notes()  # notes typed for the previous entry
-        if e is not self.entry:  # hidden again, unless the list's Show passwords is on
+        if not same:  # another entry: hidden again, unless Show passwords is on (a reload keeps it)
             self.revealed = self.window().vault.model.show_passwords if e else False
+            if self._notes_shown:
+                self._notes_shown = False
+                QApplication.instance().removeEventFilter(self)
         self.entry = e
         self._show_extra(e)
         self.totp_box.setVisible(bool(e and e["totp"]))
@@ -1611,7 +1691,8 @@ class NotesPanel(QWidget):
             self.totp_timer.start()
         else:
             self.totp_timer.stop()
-        for part in (self.icon, self.fav_btn, self.history_btn, self.edit_btn, self.card, self.notes_label, self.notes):
+        for part in (self.icon, self.fav_btn, self.history_btn, self.edit_btn, self.card, self.notes_label, self.notes,
+                     self.details_splitter):
             part.setVisible(e is not None)
         self._show_activity(e)
         if e is None:
@@ -1622,6 +1703,7 @@ class NotesPanel(QWidget):
             self.notes.clear()
             self._loading_notes = False
             self.advice.hide()
+            self.notes_mask.hide()
             return
         self.title.setText(e["title"])
         vault = self.window().vault
@@ -1666,6 +1748,7 @@ class NotesPanel(QWidget):
             self._loading_notes = True
             self.notes.setPlainText(e["raw"]["notes"] if editable else e["notes"])
             self._loading_notes = False
+        self._mask_notes()
 
     def set_revealed(self, on):
         """Shows or hides the password (each entry starts hidden)."""
@@ -1682,7 +1765,8 @@ class NotesPanel(QWidget):
         mono.setPixelSize(round(15 * self.text_scale))
         self.pw_value.setFont(mono)
         self.eye.setIcon(FIF.HIDE if on else FIF.VIEW)
-        self.eye.setToolTip("Hide password" if on else "Show password")
+        self.eye.setToolTip("Hide password and notes" if on else "Show password and notes")
+        self._mask_notes()
 
     def update_chip(self):
         """The password's health problem (weak, reused, …), or "Strong", once the check has run."""
@@ -2296,6 +2380,10 @@ class VaultView(QWidget):
     def set_colorize(self, on):
         self.delegate.colorize = on
         self.notes.set_revealed(self.notes.revealed)
+        self.table.viewport().update()
+
+    def set_stripes(self, on):
+        self.delegate.stripes = on
         self.table.viewport().update()
 
     def _on_reveal(self, on):
@@ -4438,6 +4526,11 @@ class HealthView(QWidget):
         root.setSpacing(14)
 
         head = QHBoxLayout()
+        back = TransparentToolButton(FIF.LEFT_ARROW)  # it's opened from Settings
+        back.setToolTip("Back to Settings")
+        back.clicked.connect(self._back)
+        head.addWidget(back, 0, Qt.AlignTop)
+        head.addSpacing(6)
         titles = QVBoxLayout()
         titles.setSpacing(2)
         titles.addWidget(TitleLabel("Password health"))
@@ -4546,6 +4639,12 @@ class HealthView(QWidget):
         live = [e for e in self.db.entries if not e["in_bin"] and not e["backup"]]
         to_fix = {i["entry"]["uuid"] for i in self.issues if i["issue"] != "old"}
         return (round(100 * (len(live) - len(to_fix)) / len(live)) if live else 100), len(to_fix)
+
+    def _back(self):
+        """Back to Settings, scrolled to the Password health card this was opened from."""
+        settings_view = self.window().settings_view
+        self.window().switchTo(settings_view)
+        QTimer.singleShot(0, lambda: settings_view.ensureWidgetVisible(settings_view.health_card, 0, 40))
 
     def _toggle_filter(self, issue):
         self.filter = None if self.filter == issue else issue
@@ -4680,6 +4779,8 @@ class SettingsView(ScrollArea):
         density.currentTextChanged.connect(lambda name: settings.setValue("row_density", name))
         density.currentTextChanged.connect(on_density)
         root.addWidget(self._row("Row density", "How tightly entries are packed in the list.", density))
+        root.addWidget(self._row("Striped list", "Shade every other entry in the list, to follow a row by eye.",
+                                 self._bool_switch("list_stripes", lambda on: self.window().vault.set_stripes(on))))
 
         root.addSpacing(8)
         root.addWidget(SubtitleLabel("Database"))
@@ -4722,6 +4823,8 @@ class SettingsView(ScrollArea):
         root.addWidget(SubtitleLabel("Password health"))
         self.health_card = HealthButton()
         self.health_card.setCheckable(False)
+        self.health_card.setToolTip("Open the full report: weak, reused, missing and expired passwords")
+        self.health_card.setCursor(Qt.PointingHandCursor)
         root.addWidget(self.health_card)
         root.addStretch(1)
         root.addWidget(caption(f"Vault {VERSION}"), 0, Qt.AlignRight)
@@ -5206,6 +5309,9 @@ class HealthButton(QAbstractButton):
                 detail = f"{label} · nothing to fix"
         else:
             detail = "Checking…" if self.open else ""
+        if not self.isCheckable():  # in Settings: a chevron, as it opens the full report
+            s = 14
+            FIF.CHEVRON_RIGHT_MED.render(p, QRect(int(r.right()) - s - 14, int(r.center().y()) - s // 2, s, s))
         x = ring.right() + 12
         p.setPen(QColor(Qt.white if dark else Qt.black))
         p.setFont(getFont(14, QFont.DemiBold))
