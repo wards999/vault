@@ -71,6 +71,17 @@ def estimate_bits(password):
         return _naive_bits(password)
 
 
+def unload_strength_checker():
+    """Drops zxcvbn and its word lists (about 8 of the 14 MB they take come back), e.g. once Vault has
+    measured every password; estimate_bits loads it again if it's needed."""
+    import gc
+    names = [n for n in sys.modules if n == "zxcvbn" or n.startswith("zxcvbn.")]
+    for name in names:
+        del sys.modules[name]
+    if names:
+        gc.collect()
+
+
 def _naive_bits(password):
     """Fallback: length x log2(size of the character types used), penalising repeats."""
     pool = 0

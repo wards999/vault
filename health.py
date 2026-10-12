@@ -27,10 +27,12 @@ def _age_text(days):
     return f"{days} days ago"
 
 
-def report(entries, now=None, strength_cache=None):
+def report(entries, now=None, strength_cache=None, strength=True):
     """List of issue dicts: {issue, entry, detail, sort} for entries outside the Recycle Bin and
     Backup folders (old copies there would just show up as "reused" alongside the live entry).
-    strength_cache: {password: bits} kept between checks, so unchanged passwords aren't measured again."""
+    strength_cache: {password: bits} kept between checks, so unchanged passwords aren't measured again.
+    strength=False skips the "weak" check: the rest are quick comparisons, while measuring strength
+    loads zxcvbn's word lists (about 20 MB)."""
     now = now or datetime.now(timezone.utc)
     live = [e for e in entries if not e["in_bin"] and not e["backup"]]
     by_password = defaultdict(list)
@@ -45,9 +47,9 @@ def report(entries, now=None, strength_cache=None):
         if not password:
             issues.append(dict(issue="empty", entry=e, detail="", sort=0))
             continue
-        if password not in strength_cache:
+        if strength and password not in strength_cache:
             strength_cache[password] = generator.estimate_bits(password)
-        bits = strength_cache[password]
+        bits = strength_cache.get(password, WEAK_BITS) if strength else WEAK_BITS
         if bits < WEAK_BITS:
             label = generator.strength_label(bits)[0]
             issues.append(dict(issue="weak", entry=e, detail=f"{label} · ~{int(bits)} bits", sort=bits))

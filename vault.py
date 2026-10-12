@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
     QApplication, QAbstractButton, QLabel, QWidget, QHBoxLayout, QVBoxLayout, QTreeWidgetItem, QTreeWidgetItemIterator,
     QFileDialog, QHeaderView, QAbstractItemView, QSplitter, QSplitterHandle, QLineEdit, QTableWidgetItem,
     QStyledItemDelegate, QDialog, QGraphicsDropShadowEffect, QSizePolicy, QGridLayout, QButtonGroup,
-    QStyle, QStyleOptionViewItem,
+    QStyle, QStyleOptionViewItem, QToolTip, QStackedWidget,
 )
 from qfluentwidgets import (
     FluentWindow, NavigationItemPosition, FluentIcon as FIF, setTheme, Theme,
@@ -42,7 +42,7 @@ from qfluentwidgets import (
     SegmentedWidget, InfoBar, InfoBarIcon, InfoBarPosition, MessageBox, MessageBoxBase, TreeWidget,
     TableView, RoundMenu, Action, qconfig, getFont, SmoothMode, ComboBox, setCustomStyleSheet,
     setThemeColor, themeColor, ProgressRing, ListWidget, CardWidget, TableWidget, ScrollArea, setFontFamilies,
-    CheckableMenu, FluentIconBase, getIconColor,
+    CheckableMenu, FluentIconBase, getIconColor, HyperlinkButton,
 )
 from qfluentwidgets.components.widgets.table_view import TableItemDelegate
 from qfluentwidgets.components.widgets.tree_view import TreeItemDelegate
@@ -92,7 +92,7 @@ def idle_lock_minutes():
     return minutes if minutes in IDLE_LOCK_CHOICES.values() else 5
 CLIPBOARD_CHOICES = {"Never": 0, "10 seconds": 10, "20 seconds": 20, "30 seconds": 30,
                      "1 minute": 60, "2 minutes": 120, "5 minutes": 300}
-CARD_DENSITIES = {"Compact": (46, 28), "Comfortable": (58, 34), "Spacious": (68, 40)}  # card height, icon size
+CARD_DENSITIES = {"Compact": (32, 22), "Comfortable": (38, 26), "Spacious": (46, 30)}  # card height, icon size
 FOLDER_ROW_HEIGHTS = {"Compact": 22, "Comfortable": 33, "Spacious": 42}  # the folder tree's rows, per density
 AVATAR_COLORS = ["#0f6cbd", "#c239b3", "#038387", "#ca5010", "#8764b8", "#498205", "#d13438", "#4f6bed"]
 
@@ -104,10 +104,18 @@ THEMES = {
     "Ocean": (Theme.LIGHT, "#0f6cbd", "#e8f1fb"),
     "Rose": (Theme.LIGHT, "#c4314b", "#fbedf0"),
     "Sand": (Theme.LIGHT, "#b45f06", "#f5eee3"),
+    "Mint": (Theme.LIGHT, "#0f7b6c", "#e9f5f1"),
+    "Lavender": (Theme.LIGHT, "#6b4fbb", "#f1edfa"),
+    "Slate": (Theme.LIGHT, "#3d5a80", "#eceff3"),
+    "Peach": (Theme.LIGHT, "#c2410c", "#fcefe8"),
     "Midnight": (Theme.DARK, "#5b9bff", "#131a2b"),
     "Forest": (Theme.DARK, "#5fc77a", "#16231b"),
     "Grape": (Theme.DARK, "#b48cf2", "#1f1a2c"),
     "Graphite": (Theme.DARK, "#f0b400", "#1b1b1d"),
+    "Arctic": (Theme.DARK, "#88c0d0", "#2b303b"),
+    "Deep sea": (Theme.DARK, "#4fd1c5", "#0f1e22"),
+    "Ember": (Theme.DARK, "#ff8a4c", "#211917"),
+    "Rosewood": (Theme.DARK, "#f17ea0", "#241a1f"),
 }
 DEFAULT_BACKGROUNDS = ("#f0f4f9", "#202020")  # the UI library's defaults (light, dark)
 
@@ -524,7 +532,7 @@ class EntryDelegate(TableItemDelegate):
         super().__init__(view)
         self.model = model
         self.colorize = setting("color_passwords", True)  # for the details pane's password
-        self.font = getFont(14, QFont.DemiBold)
+        self.font = getFont(13)  # the same as the folders' (and set_list_text_size scales both)
         self.small = getFont(13)
         self.italic = QFont(self.font)  # old copies in a Backup folder
         self.italic.setItalic(True)
@@ -538,6 +546,25 @@ class EntryDelegate(TableItemDelegate):
         self.muted = QColor("#a3a9af" if dark else "#5c656d")
 
     ATTACH = AppIcon("attach")
+    # Buttons shown on the card under the mouse: (field, icon, tooltip)
+    ACTIONS = [("username", AppIcon("person"), "Copy username (Ctrl+B)"),
+               ("password", AppIcon("key"), "Copy password (Ctrl+C)"),
+               ("totp", icon("STOP_WATCH", "HISTORY"), "Copy 2FA code (Ctrl+T)")]
+    BUTTON_WIDTH = 48  # each one is the full height of the card: easy to hit
+
+    hover_pos = None  # the mouse, over the list (for the button under it)
+    done = None  # (entry uuid, field) just copied: its button shows a tick for a moment
+
+    def actions(self, e, rect):
+        """[(field, icon, tooltip, QRect)] of the hover buttons for this card, right-aligned."""
+        shown = [a for a in self.ACTIONS if (e["totp"] if a[0] == "totp" else e[a[0]])]
+        w, r = self.BUTTON_WIDTH, rect.adjusted(6, 2, -8, -2)
+        x = r.right() + 1 - len(shown) * (w + 2) + 2
+        out = []
+        for field, ico, tip in shown:
+            out.append((field, ico, tip, QRect(x, r.y(), w, r.height())))
+            x += w + 2
+        return out
 
     def title_style(self, e):
         """The title's (font, colour): grey when expired, and grey and italic for old copies in a Backup folder."""
@@ -569,6 +596,20 @@ class EntryDelegate(TableItemDelegate):
         tile = QRect(r.x() + 12, r.center().y() - self.tile // 2 + 1, self.tile, self.tile)
         draw_entry_tile(painter, tile, e, self.model.icons)
         x, right = tile.right() + 13, r.right() - 10
+        # The copy buttons: always there, very pale, and full strength on the card under the mouse
+        c = 255 if dark else 0
+        hovered = index.row() == self.hoverRow
+        for field, ico, _tip, rect in self.actions(e, option.rect):
+            if hovered and self.hover_pos is not None and rect.contains(self.hover_pos):
+                painter.setBrush(QColor(c, c, c, 22 if dark else 16))
+                painter.drawRoundedRect(rect, 6, 6)
+            s = 16
+            spot = QRect(rect.x() + (rect.width() - s) // 2, rect.y() + (rect.height() - s) // 2, s, s)
+            done = self.done == (e["uuid"], field)
+            painter.setOpacity(1 if hovered or done else 0.28)
+            (FIF.ACCEPT if done else ico).render(painter, spot)
+            painter.setOpacity(1)
+            right = min(right, rect.x() - 6)
         if e["favourite"]:
             s = 14
             painter.setBrush(STAR_COLOR)
@@ -582,19 +623,13 @@ class EntryDelegate(TableItemDelegate):
             right -= s + 8
 
         title_font, title_color = self.title_style(e)
-        fm1, fm2 = QFontMetrics(title_font), QFontMetrics(self.small)
+        fm1 = QFontMetrics(title_font)
         width = max(0, right - x)
-        lines = fm1.height() + (2 + fm2.height() if e["username"] else 0)
-        y = r.y() + (r.height() - lines) // 2
+        y = r.y() + (r.height() - fm1.height()) // 2
         painter.setFont(title_font)
         painter.setPen(title_color)
         painter.drawText(QRect(x, y, width, fm1.height()), Qt.AlignLeft | Qt.AlignVCenter,
                          fm1.elidedText(e["title"], Qt.ElideRight, width))
-        if e["username"]:
-            painter.setFont(self.small)
-            painter.setPen(self.muted)
-            painter.drawText(QRect(x, y + fm1.height() + 2, width, fm2.height()), Qt.AlignLeft | Qt.AlignVCenter,
-                             fm2.elidedText(e["username"], Qt.ElideRight, width))
         painter.restore()
 
 
@@ -923,9 +958,6 @@ class EntryModel(QAbstractTableModel):
                 return "This entry has expired"
             if col == 0 and self.is_dimmed_backup(e):
                 return f"An old copy, kept in the Backup folder ({e['folder']})"
-            if col == 0 and e["password"]:
-                return ("Double-click to copy the password and minimise" if setting("minimise_on_copy", True)
-                        else "Double-click to copy the password")
             if col in (1, 2):
                 return "Double-click to copy and minimise" if setting("minimise_on_copy", True) else "Double-click to copy"
             if col == 3 and e["url"]:
@@ -1061,6 +1093,7 @@ def copy_button(tip, on_click):
     """A copy button that turns into a tick for a moment once it has copied."""
     button = TransparentToolButton(FIF.COPY)
     button.setToolTip(shortcut_text(tip))
+    button.is_copy = True  # a FieldRow with one copies when clicked anywhere
 
     def clicked():
         on_click()
@@ -1087,9 +1120,10 @@ CHIP_COLORS = {  # style: ((light background, text), (dark background, text))
 }
 
 
-def password_html(password, colorize):
-    """A revealed password as rich text: monospaced, each character coloured by its kind."""
-    dark = isDarkTheme()
+def password_html(password, colorize, dark=None):
+    """A revealed password as rich text: monospaced, each character coloured by its kind (for a dark
+    or light background; by default the theme's)."""
+    dark = isDarkTheme() if dark is None else dark
     plain = PASSWORD_PLAIN[dark] if colorize else ("#ffffff" if dark else "#000000")
     out = []
     for ch in password:
@@ -1124,16 +1158,45 @@ class FieldRow(QWidget):
         texts.addWidget(self.value)
         self.line.addLayout(texts, 1)
 
+    copy = None  # its copy button: clicking anywhere on the row copies
+
     def add_button(self, button):
         button.setFixedSize(34, 34)
         button.setIconSize(QSize(16, 16))
         self.line.addWidget(button, 0, Qt.AlignVCenter)
+        if getattr(button, "is_copy", False):
+            self.copy = button
+            self.setAttribute(Qt.WA_Hover)
+            if isinstance(self.value, QLabel) and not self.value.textInteractionFlags() & Qt.LinksAccessibleByMouse:
+                self.value.setTextInteractionFlags(Qt.NoTextInteraction)  # its clicks go to the row
+            self.setToolTip("Click to copy")
         return button
 
+    def event(self, e):
+        if self.copy is not None and e.type() in (QEvent.HoverEnter, QEvent.HoverLeave):
+            self.update()
+        return super().event(e)
+
+    def mouseReleaseEvent(self, e):
+        if self.copy is not None and e.button() == Qt.LeftButton and self.rect().contains(e.position().toPoint()):
+            self.copy.click()
+        else:
+            super().mouseReleaseEvent(e)
+
+    def mousePressEvent(self, e):
+        if self.copy is None:
+            super().mousePressEvent(e)  # (accepted, so the release comes here)
+
     def paintEvent(self, _event):
+        p = QPainter(self)
+        dark = isDarkTheme()
+        if self.copy is not None and self.underMouse():  # it's all one button
+            p.setRenderHint(QPainter.Antialiasing)
+            p.setPen(Qt.NoPen)
+            p.setBrush(QColor(255, 255, 255, 10) if dark else QColor(0, 0, 0, 8))
+            p.drawRoundedRect(QRectF(self.rect()).adjusted(4, 2, -4, -2), 6, 6)
         if not self.first:
-            p = QPainter(self)
-            p.setPen(QColor(255, 255, 255, 22) if isDarkTheme() else QColor(0, 0, 0, 20))
+            p.setPen(QColor(255, 255, 255, 22) if dark else QColor(0, 0, 0, 20))
             p.drawLine(18, 0, self.width() - 18, 0)
 
 
@@ -1177,6 +1240,11 @@ class NotesPanel(QWidget):
         self.fav_btn.setFixedSize(36, 36)
         self.fav_btn.clicked.connect(lambda: vault().toggle_favourite())
         head.addWidget(self.fav_btn, 0, Qt.AlignVCenter)
+        self.history_btn = TransparentToolButton(icon("HISTORY"))
+        self.history_btn.setFixedSize(36, 36)
+        self.history_btn.setToolTip(shortcut_text("History: earlier versions of this entry (Ctrl+H)"))
+        self.history_btn.clicked.connect(lambda: vault().show_history())
+        head.addWidget(self.history_btn, 0, Qt.AlignVCenter)
         self.edit_btn = PushButton(FIF.EDIT, "Edit")
         self.edit_btn.setToolTip(shortcut_text("Edit (Enter)"))
         self.edit_btn.clicked.connect(lambda: vault().edit_entry())
@@ -1239,28 +1307,244 @@ class NotesPanel(QWidget):
         self.extra = QVBoxLayout(self.extra_box)
         self.extra.setContentsMargins(0, 0, 0, 0)
         self.extra.setSpacing(0)
-        self.rows = [self.user_row, self.pw_row, self.url_row, self.totp_box]
-        for row in self.rows + [self.extra_box]:
+        # Its folder, changed by choosing another one here (a move: undoable)
+        self.folder_combo = ComboBox()
+        self.folder_combo.setMinimumWidth(1)
+        self.folder_combo.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Fixed)
+        self.folder_combo.currentIndexChanged.connect(self._folder_chosen)
+        self._loading_folder = False
+        self.folder_row = FieldRow("Folder", self.folder_combo)
+        self.rows = [self.user_row, self.pw_row, self.url_row, self.totp_box, self.folder_row]
+        for row in self.rows[:-1] + [self.extra_box, self.folder_row]:
             fields.addWidget(row)
         root.addWidget(self.card)
 
-        root.addSpacing(22)
+        # The notes, typed straight in here (saved a moment after typing stops)
+        root.addSpacing(18)
         self.notes_label = caption("Notes")
         root.addWidget(self.notes_label)
         root.addSpacing(4)
         self.notes = PlainTextEdit()
-        self.notes.setReadOnly(True)
         self.notes.setPlaceholderText("No notes")
-        self.notes.layer.hide()  # no accent underline: it's for reading, not a box to type in
         self.set_notes_px(14)
+        self.notes.setMinimumHeight(70)
+        self.notes_timer = QTimer(self, singleShot=True, interval=800, timeout=self.save_notes)
+        self.notes.textChanged.connect(lambda: self._loading_notes or self.notes_timer.start())
+        self.notes.installEventFilter(self)  # leaving the notes saves them straight away
+        self._loading_notes = False
         root.addWidget(self.notes, 1)
+
+        # When it was made and changed, its last few changes, and other entries for the same site
+        root.addSpacing(14)
+        self.activity_label = caption("Activity")
+        root.addWidget(self.activity_label)
+        root.addSpacing(4)
+        self.dates = caption("")
+        self.dates.setWordWrap(True)
+        root.addWidget(self.dates)
+        # What Password health found wrong with this password, with a link to change it
+        self.advice = QWidget()
+        advice = QHBoxLayout(self.advice)
+        advice.setContentsMargins(0, 4, 0, 0)
+        advice.setSpacing(8)
+        self.advice_text = CaptionLabel("")
+        self.advice_text.setWordWrap(True)
+        advice.addWidget(self.advice_text, 1)
+        self.advice_btn = HyperlinkButton(url="", text="Change password")
+        self.advice_btn.setToolTip("Edit the entry with a newly generated password")
+        self.advice_btn.clicked.connect(lambda: vault().change_password())
+        self._small(self.advice_btn)
+        advice.addWidget(self.advice_btn, 0, Qt.AlignVCenter)
+        root.addWidget(self.advice)
+        self.changes = QVBoxLayout()
+        self.changes.setSpacing(0)
+        root.addLayout(self.changes)
+        self.related_label = caption("")
+        root.addSpacing(10)
+        root.addWidget(self.related_label)
+        self.related = QVBoxLayout()  # one per line, so long names don't run into each other
+        self.related.setSpacing(0)
+        root.addLayout(self.related)
         qconfig.themeChanged.connect(lambda: self.set_entry(self.entry))
         self.set_entry(None)
 
+    # ---- the folder, chosen in place
+
+    def _fill_folders(self, e, editable):
+        db = self.window().vault.db
+        self._loading_folder = True
+        self.folder_combo.clear()
+        choices = [("Top level (no folder)", None)] + [
+            (" › ".join(f["path"]), f["id"]) for f in (db.folders if db else [])
+            if not f["in_bin"] or f["id"] == e["folder_id"]]
+        for text, folder in choices:
+            self.folder_combo.addItem(text, userData=folder)
+        ids = [folder for _, folder in choices]
+        self.folder_combo.setCurrentIndex(ids.index(e["folder_id"]) if e["folder_id"] in ids else 0)
+        self.folder_combo.setEnabled(editable and not e["in_bin"])
+        self._loading_folder = False
+
+    def _folder_chosen(self, _index):
+        e = self.entry
+        if self._loading_folder or e is None:
+            return
+        folder = self.folder_combo.currentData()
+        if folder != e["folder_id"]:
+            self.window().saver.submit(Op("move", e["uuid"], folder=folder, title=e["title"]),
+                                       f"Move of “{e['title']}”")
+
+    # ---- notes typed in place
+
+    def eventFilter(self, obj, event):
+        if obj is self.notes and event.type() == QEvent.FocusOut:
+            self.save_notes()
+        return super().eventFilter(obj, event)
+
+    def save_notes(self):
+        """Saves notes typed here (as an edit of the entry: undoable, kept in its history)."""
+        self.notes_timer.stop()
+        e, vault = self.entry, self.window().vault
+        if e is None or self.notes.isReadOnly() or not vault._editable():
+            return
+        text = self.notes.toPlainText()
+        if text == e["raw"]["notes"]:
+            return
+        values = {name: e["raw"][name] for name in store.FIELDS} | {"notes": text}
+        self.window().saver.submit(Op("update", e["uuid"], fields={"notes": text}, all_fields=values,
+                                      base_mtime=e["base_mtime"], title=e["title"]), f"Notes of “{e['title']}”")
+
+    # ---- the extra sections
+
+    def _show_advice(self, e, problems):
+        shown = [issue for issue in ("weak", "reused", "expired", "old") if issue in (problems or {})]
+        self.advice.setVisible(bool(e and e["password"] and shown))
+        if not self.advice.isVisible():
+            return
+        self.advice_text.setText("\n".join(f"{health.ISSUES[issue][0]} · {problems[issue]}" for issue in shown))
+        self.advice_btn.setVisible(self.window().vault._editable())
+        style = "bad" if {"weak", "expired"} & set(shown) else "warn"  # coloured text, nothing heavier
+        self.advice_text.setTextColor(QColor(CHIP_COLORS[style][0][1]), QColor(CHIP_COLORS[style][1][1]))
+
+    @staticmethod
+    def _ago(when):
+        if when is None:
+            return ""
+        days = (datetime.now(when.tzinfo) - when).days
+        if days < 1:
+            return "today"
+        if days < 2:
+            return "yesterday"
+        if days < 60:
+            return f"{days} days ago"
+        if days < 730:
+            return f"{days // 30} months ago"
+        return f"{days // 365} years ago"
+
+    def _show_activity(self, e):
+        while self.changes.count():
+            self.changes.takeAt(0).widget().deleteLater()
+        while self.related.count():
+            item = self.related.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+        for part in (self.activity_label, self.dates):
+            part.setVisible(e is not None)
+        self.related_label.hide()
+        if e is None:
+            return
+        parts = [f"Created {e['created']}" if e["created"] else "", f"modified {e['modified']}" if e["modified"] else ""]
+        if e["password"] and e.get("password_changed"):
+            parts.append(f"password last changed {self._ago(e['password_changed'])}")
+        self.dates.setText(" · ".join(p for p in parts if p))
+
+        # The last few changes, from the entry's history (newest first)
+        vault = self.window().vault
+        versions = vault.db.history(e["uuid"]) if vault.db else []
+        newer, when = e["raw"], None
+        names = {"title": "title", "username": "username", "password": "password", "url": "website", "notes": "notes"}
+        shown = 0
+        for version in versions:
+            changed = [label for key, label in names.items() if (newer.get(key) or "") != (version.get(key) or "")]
+            stamp = e["modified"] if when is None else when.strftime("%b %d, %Y %H:%M")
+            if changed:
+                link = HyperlinkButton(url="", text=f"{stamp}: {', '.join(changed)} changed")
+                link.setToolTip("See the earlier versions (History)")
+                link.clicked.connect(lambda: self.window().vault.show_history())
+                self._small(link)
+                self.changes.addWidget(link, 0, Qt.AlignLeft)
+                shown += 1
+            newer, when = version, version["modified"]
+            if shown == 3:
+                break
+
+        # Other entries for the same site: their name or website contains the site's name, e.g. "yahoo"
+        # for Yahoo Mail and Yahoo Finance (8 at most; "… more" searches for the rest)
+        key = self._site_word(e)
+        live = [x for x in vault.db.entries if x["uuid"] != e["uuid"] and not x["in_bin"]] if vault.db else []
+        # Both ways round: "apple" finds "apple2", and "apple2" finds "apple"
+        related = [x for x in live if key and (key in x["title"].lower() or key in x["url"].lower()
+                                               or (self._site_word(x) or "\0") in key)]
+        self.related_label.setVisible(bool(related))
+        self.related_label.setText(f"Also for “{key}” ({len(related)}):")
+        for other in related[:8]:
+            link = HyperlinkButton(url="", text=other["title"] + (f" ({other['username']})" if other["username"] else ""))
+            link.clicked.connect(lambda _=False, u=other["uuid"]: self.window().show_entry(u))
+            self._small(link)
+            self.related.addWidget(link, 0, Qt.AlignLeft)
+        if len(related) > 8:
+            more = HyperlinkButton(url="", text=f"… and {len(related) - 8} more")
+            more.setToolTip(f"Search for {key}")
+            more.clicked.connect(lambda: self.window().vault.search.setText(key))
+            self._small(more)
+            self.related.addWidget(more, 0, Qt.AlignLeft)
+
+    @staticmethod
+    def _site_word(e):
+        """The site's name in lower case: from its website ("yahoo" for mail.yahoo.co.uk), else the
+        first word of the entry's name. "" if too short to be useful."""
+        host = favicon.site_host(e["url"]) or ""
+        labels = [p for p in host.lower().split(".") if p and p != "www"]
+        if len(labels) >= 2:
+            labels = labels[:-1]  # the ending: .com, .uk
+            if len(labels) >= 2 and labels[-1] in ("co", "com", "org", "net", "gov", "ac", "ltd", "me"):
+                labels = labels[:-1]  # .co.uk and the like
+            word = labels[-1]
+        else:
+            word = (re.findall(r"[a-z0-9]+", e["title"].lower()) or [""])[0]
+        return word if len(word) >= 3 else ""
+
+    def _small(self, link):
+        font = link.font()
+        font.setPixelSize(max(9, round(12 * self.text_scale)))
+        link.setFont(font)
+
+    text_scale = 1.0  # Settings → List text size (1.0 = 100%)
+
+    def set_text_scale(self, k):
+        """The fields follow the list text size too: their labels, values, the 2FA code and the label
+        by the password (the notes: set_notes_px)."""
+        self.text_scale = k
+        self._scale_fields()
+        self.set_revealed(self.revealed)  # the password's font
+        self.update_chip()
+
+    def _scale_fields(self):
+        k = self.text_scale
+        for row in self.findChildren(FieldRow):
+            for label, px in ((row.label, 12), (row.value, 14)):
+                if isinstance(label, QLabel) and label is not self.pw_value:
+                    font = QFont(label.font())
+                    font.setPixelSize(max(9, round(px * k)))
+                    label.setFont(font)
+        qss = f"StrongBodyLabel {{ {mono_font_qss(round(20 * k))} letter-spacing: 2px; }}"
+        setCustomStyleSheet(self.totp_code, qss, qss)
+        font = QFont(self.notes_label.font())
+        font.setPixelSize(max(9, round(12 * k)))
+        self.notes_label.setFont(font)
+
     def set_notes_px(self, px):
-        """The notes' text size, and no box around them (one style sheet: setting one replaces the other)."""
-        qss = (f"QPlainTextEdit, QPlainTextEdit:hover, QPlainTextEdit:focus {{ background: transparent;"
-               f" border: none; padding: 0px; font-size: {px}px; }}")
+        """The notes' text size (in the usual box, like the other fields you can type in)."""
+        qss = f"QPlainTextEdit {{ font-size: {px}px; }}"
         setCustomStyleSheet(self.notes, qss, qss)
 
     def _show_extra(self, e):
@@ -1293,6 +1577,7 @@ class NotesPanel(QWidget):
                 line.addWidget(button)
             line.addStretch(1)
             self.extra.addWidget(FieldRow("Attachments", box))
+        self._scale_fields()  # the new rows in the list text size
 
     def save_attachment(self, name):
         """Saves an attached file where the user chooses (it's only ever written decrypted there)."""
@@ -1313,8 +1598,11 @@ class NotesPanel(QWidget):
                         position=InfoBarPosition.TOP_RIGHT, duration=2000, parent=self.window())
 
     def set_entry(self, e):
-        if e is not self.entry:
-            self.revealed = False
+        same = e is not None and self.entry is not None and e["uuid"] == self.entry["uuid"]
+        if not same and self.notes_timer.isActive():
+            self.save_notes()  # notes typed for the previous entry
+        if e is not self.entry:  # hidden again, unless the list's Show passwords is on
+            self.revealed = self.window().vault.model.show_passwords if e else False
         self.entry = e
         self._show_extra(e)
         self.totp_box.setVisible(bool(e and e["totp"]))
@@ -1323,13 +1611,17 @@ class NotesPanel(QWidget):
             self.totp_timer.start()
         else:
             self.totp_timer.stop()
-        for part in (self.icon, self.fav_btn, self.edit_btn, self.card, self.notes_label, self.notes):
+        for part in (self.icon, self.fav_btn, self.history_btn, self.edit_btn, self.card, self.notes_label, self.notes):
             part.setVisible(e is not None)
+        self._show_activity(e)
         if e is None:
             self.title.setText("No entry selected")
             self.path.setText("")
             self.modified.setText("")
+            self._loading_notes = True
             self.notes.clear()
+            self._loading_notes = False
+            self.advice.hide()
             return
         self.title.setText(e["title"])
         vault = self.window().vault
@@ -1362,11 +1654,18 @@ class NotesPanel(QWidget):
         url = self.url_value.fontMetrics().elidedText(e["url"], Qt.ElideMiddle, 520)
         self.url_value.setText(f'<a href="open" style="color:{QColor(themeColor()).name()}; text-decoration:none">'
                                f'{url.replace("&", "&amp;").replace("<", "&lt;")}</a>')
+        self._fill_folders(e, editable)
         shown = [row for row in self.rows if row.isVisibleTo(self.card)]
         for row in self.rows:
             row.first = bool(shown) and row is shown[0]
         self.card.setVisible(bool(shown) or self.extra_box.isVisibleTo(self.card))
-        self.notes.setPlainText(e["notes"])
+        # The notes, editable here; left alone while being typed in (the list reloads after each save)
+        self.notes.setReadOnly(not editable)
+        self.notes.setPlaceholderText("Add notes…" if editable else "No notes")
+        if not (same and self.notes.hasFocus()):
+            self._loading_notes = True
+            self.notes.setPlainText(e["raw"]["notes"] if editable else e["notes"])
+            self._loading_notes = False
 
     def set_revealed(self, on):
         """Shows or hides the password (each entry starts hidden)."""
@@ -1380,7 +1679,7 @@ class NotesPanel(QWidget):
             self.pw_value.setText(f'<span style="color:{"#ffffff" if isDarkTheme() else "#000000"}">{"•" * 12}</span>')
         mono = QFont(MONO_FAMILY)
         mono.setStyleHint(QFont.TypeWriter)
-        mono.setPixelSize(15)
+        mono.setPixelSize(round(15 * self.text_scale))
         self.pw_value.setFont(mono)
         self.eye.setIcon(FIF.HIDE if on else FIF.VIEW)
         self.eye.setToolTip("Hide password" if on else "Show password")
@@ -1389,17 +1688,20 @@ class NotesPanel(QWidget):
         """The password's health problem (weak, reused, …), or "Strong", once the check has run."""
         e = self.entry
         problems = self.window().health.problems(e["uuid"]) if e else None
+        self._show_advice(e, problems)
         if not e or not e["password"] or problems is None:
             self.chip.hide()
             return
         text, style = next(((t, s) for issue, t, s in STRENGTH_CHIPS if issue in problems), ("Strong", "good"))
+        if text == "Strong" and not self.window().health.full:
+            style = None  # strength not measured yet (Password health not opened): no label
         if not style:
             self.chip.hide()
             return
         background, color = CHIP_COLORS[style][isDarkTheme()]
         self.chip.setText(text)
         self.chip.setStyleSheet(f"QLabel {{ background: {background}; color: {color}; border-radius: 10px;"
-                                f" padding: 2px 9px; font-size: 12px; }}")
+                                f" padding: 2px 9px; font-size: {round(12 * self.text_scale)}px; }}")
         self.chip.setToolTip("\n".join(problems.values()) if problems else "No problems found in Password health")
         self.chip.show()
 
@@ -1454,7 +1756,7 @@ class VaultView(QWidget):
         self.tree.itemClicked.connect(lambda *_: self._show_page())  # e.g. from Settings: back to the list
         for signal in (self.tree.itemExpanded, self.tree.itemCollapsed):  # what's visible changed: fit again
             signal.connect(lambda _item: QTimer.singleShot(0, self._fit_sidebar))
-        self.new_btn = PrimaryPushButton(FIF.ADD, "New entry")
+        self.new_btn = SideButton(FIF.ADD, "New entry", checkable=False)  # in the sidebar, by Password health
         self.new_btn.setToolTip(shortcut_text("New entry (Ctrl+N)"))
         self.new_btn.clicked.connect(self.new_entry)
 
@@ -1496,11 +1798,14 @@ class VaultView(QWidget):
         self.sort_btn.setToolTip("Sort")
         self.sort_btn.clicked.connect(self._sort_menu)
         head.addWidget(self.sort_btn, 0, Qt.AlignVCenter)
+        right.addLayout(head)
+        # Show passwords and Check for changes (shown in the title bar)
+        self.reveal = TransparentToggleToolButton(FIF.VIEW)
+        self.reveal.setToolTip("Show passwords")
+        self.reveal.toggled.connect(self._on_reveal)
         self.check_btn = TransparentToolButton(FIF.SYNC)
         self.check_btn.setToolTip("Check for changes made on other devices or apps (F5)")
         self.check_btn.clicked.connect(self.check_for_changes)
-        head.addWidget(self.check_btn, 0, Qt.AlignVCenter)
-        right.addLayout(head)
 
         self.model = EntryModel(self)
         self.table = TableView()
@@ -1536,6 +1841,7 @@ class VaultView(QWidget):
         self.table.setContextMenuPolicy(Qt.CustomContextMenu)
         self.table.customContextMenuRequested.connect(self._context_menu)
         self._dbl = CellDoubleClick(self.table, self._on_double_click)
+        self.tip_timer = QTimer(self, singleShot=True, interval=0, timeout=self._show_button_tip)  # straight away
         for keys, handler in (("Ctrl+C", self.copy_password), ("Ctrl+B", self.copy_username),
                               ("Ctrl+U", self.open_url), ("Return", self.edit_entry), ("Enter", self.edit_entry),
                               ("Ctrl+E", self.edit_entry), ("Delete", self.delete_entry),
@@ -1559,8 +1865,13 @@ class VaultView(QWidget):
         list_box = QWidget()
         list_box.setLayout(right)
         list_box.setMinimumWidth(260)
-        # The list and the details, side by side; drag the divider to make the list wider
-        self.splitter = GripSplitter(Qt.Horizontal, "list_splitter", [list_box, self.notes], [380, 900])
+        # The list and the details (or the entry being edited) side by side; drag the divider to make
+        # the list wider
+        self.details = QStackedWidget()
+        self.details.addWidget(self.notes)
+        self.editor = None  # EntryEditPane while an entry is being edited or added
+        self._editor_anchor = None  # the entry selected when it opened (staying on it keeps it open)
+        self.splitter = GripSplitter(Qt.Horizontal, "list_splitter", [list_box, self.details], [380, 900])
         self.splitter.setHandleWidth(9)
         root.addWidget(self.splitter)
         # The UI library pads each folder row by 20 px on the left; 12 still clears the expand arrows.
@@ -1651,6 +1962,8 @@ class VaultView(QWidget):
 
     def clear(self):
         """Forget everything that came from the database (used when locking)."""
+        if self.editor is not None:  # locked mid-edit: the form goes (unsaved changes with it)
+            self._close_editor(self.editor)
         self.db = None
         self.tree.blockSignals(True)
         self.tree.clear()
@@ -1658,6 +1971,7 @@ class VaultView(QWidget):
         self.search.blockSignals(True)
         self.search.clear()
         self.search.blockSignals(False)
+        self.reveal.setChecked(False)  # passwords hidden again after unlocking
         self.model.revealed.clear()
         self.model.set_entries([])
         self.model.icons = None
@@ -1758,9 +2072,16 @@ class VaultView(QWidget):
         return self.model.data(index, Qt.UserRole)
 
     def _on_row(self, current, _previous):
-        self.notes.set_entry(self.model.data(current, Qt.UserRole) if current.isValid() else None)
+        e = self.model.data(current, Qt.UserRole) if current.isValid() else None
+        self.notes.set_entry(e)
+        # Another entry picked while editing: finish the edit (asking about unsaved changes). The same
+        # one again (e.g. after the list reloads) keeps the form.
+        if self.editor is not None and (e is None or e["uuid"] != self._editor_anchor):
+            QTimer.singleShot(0, self.leave_editor)
 
     def eventFilter(self, obj, event):
+        if obj is self.table.viewport() and self._card_buttons(event):
+            return True
         if (obj is self.tree.viewport() and event.type() == QEvent.MouseButtonRelease
                 and event.button() == Qt.LeftButton):
             # The + at the right of the "Folders" heading: a new top-level folder
@@ -1779,30 +2100,118 @@ class VaultView(QWidget):
             return True
         return False
 
+    def _button_at(self, pos):
+        """(entry, field, tooltip) of the card's copy button under `pos`, or None."""
+        row = self.table.rowAt(pos.y())
+        if row < 0:
+            return None
+        e = self.model.entries[row]
+        rect = self.table.visualRect(self.model.index(row, 0))
+        return next(((e, field, tip) for field, _ico, tip, r in self.delegate.actions(e, rect)
+                     if r.contains(pos)), None)
+
+    def _card_buttons(self, event):
+        """The copy buttons on the card under the mouse: highlight, tooltip, click. True if handled."""
+        kind = event.type()
+        if kind in (QEvent.MouseMove, QEvent.Leave):
+            pos = event.position().toPoint() if kind == QEvent.MouseMove else None
+            if pos != self.delegate.hover_pos:
+                self.delegate.hover_pos = pos
+                self.table.viewport().update()
+            # The button's tooltip: shown quickly, and gone as soon as the mouse leaves that button
+            hit = self._button_at(pos) if pos is not None else None
+            key = (hit[0]["uuid"], hit[1]) if hit else None
+            if key != getattr(self, "_tip_key", None):
+                self._tip_key = key
+                QToolTip.hideText()
+                if key:
+                    self.tip_timer.start()
+                else:
+                    self.tip_timer.stop()
+            return False
+        if kind not in (QEvent.MouseButtonPress, QEvent.MouseButtonRelease, QEvent.MouseButtonDblClick,
+                        QEvent.ToolTip):
+            return False
+        pos = event.pos() if kind == QEvent.ToolTip else event.position().toPoint()
+        hit = self._button_at(pos)
+        if hit is None:
+            return False
+        e, field, tip = hit
+        if kind == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
+            self.tip_timer.stop()
+            QToolTip.hideText()
+            # Copies straight away; the selection stays where it is (and nothing starts dragging)
+            if field == "totp":
+                value, label = totp.code(e["totp"])[0], "2FA code"
+            else:
+                value, label = e[field], field.capitalize()
+            minimise = setting("minimise_on_copy", True)  # Settings → Minimise after copying
+            self.window().copy_secret(value, label, notify=not minimise)
+            self.delegate.done = (e["uuid"], field)
+            self.table.viewport().update()
+            QTimer.singleShot(1500, lambda done=self.delegate.done: self._clear_done(done))
+            if minimise:
+                self._minimise_after_release()
+        return True  # the button has the click (not the card underneath)
+
+    def _show_button_tip(self):
+        """The tooltip of the copy button under the mouse: just what it copies (the username; the
+        password only while it's shown with the eye in the details, else dots), kept to that button's area."""
+        viewport = self.table.viewport()
+        pos = viewport.mapFromGlobal(QCursor.pos())
+        hit = self._button_at(pos)
+        if hit is None:
+            return
+        e, field, tip = hit
+        shown = self.model.show_passwords or (self.notes.revealed and self.notes.entry is e)
+        value = {"username": e["username"], "password": e["password"] if shown else MASK,
+                 "totp": totp.code(e["totp"])[0] if field == "totp" else ""}[field]
+        rect = next(r for f, _i, _t, r in self.delegate.actions(e, self.table.visualRect(
+            self.model.index(self.model.entries.index(e), 0))) if f == field)
+        if field == "password" and shown and value:  # colour-coded, like the details
+            dark_tip = QToolTip.palette().color(QPalette.ToolTipBase).lightness() < 128
+            value = (f'<span style="font-family:\'{MONO_FAMILY}\'; font-size:14px">'
+                     f'{password_html(value, setting("color_passwords", True), dark_tip)}</span>')
+        else:
+            value = value.replace("&", "&amp;").replace("<", "&lt;")
+        QToolTip.showText(viewport.mapToGlobal(rect.bottomLeft()) + QPoint(0, 4), f"<qt>{value}</qt>", viewport, rect)
+
+    def _clear_done(self, done):
+        if self.delegate.done == done:
+            self.delegate.done = None
+            self.table.viewport().update()
+
     def zoom_list_text(self, step):
         i = LIST_TEXT_SIZES.index(self._list_text) + step
         self.set_list_text_size(LIST_TEXT_SIZES[max(0, min(len(LIST_TEXT_SIZES) - 1, i))])
 
-    # The Sort menu: (name, column, order)
-    SORTS = [("Name", EntryModel.TITLE, Qt.AscendingOrder), ("Username", EntryModel.USERNAME, Qt.AscendingOrder),
-             ("Website", EntryModel.WEBSITE, Qt.AscendingOrder), ("Folder", EntryModel.FOLDER, Qt.AscendingOrder),
-             ("Recently changed", EntryModel.MODIFIED, Qt.DescendingOrder),
-             ("Recently added", EntryModel.CREATED, Qt.DescendingOrder)]
+    # The Sort menu: what to sort by, then which way
+    SORTS = [("Name", EntryModel.TITLE), ("Username", EntryModel.USERNAME), ("Website", EntryModel.WEBSITE),
+             ("Folder", EntryModel.FOLDER), ("Date modified", EntryModel.MODIFIED), ("Date created", EntryModel.CREATED)]
 
     def _saved_sort(self):
-        saved = str(setting("list_sort", ""))
-        for _name, column, order in self.SORTS:
-            if saved == f"{column},{order.value}":
-                return column, order
-        return EntryModel.TITLE, Qt.AscendingOrder
+        try:
+            column, order = (int(x) for x in str(setting("list_sort", "")).split(","))
+        except ValueError:
+            return EntryModel.TITLE, Qt.AscendingOrder
+        if column not in dict(self.SORTS).values() or order not in (0, 1):
+            return EntryModel.TITLE, Qt.AscendingOrder
+        return column, Qt.SortOrder(order)
 
     def _sort_menu(self):
-        menu = CheckableMenu(parent=self)  # ticks the current order
-        current = (self.model.sort_column, self.model.sort_order)
-        for name, column, order in self.SORTS:
+        menu = CheckableMenu(parent=self)  # ticks the current choices
+        column, order = self.model.sort_column, self.model.sort_order
+        for name, c in self.SORTS:
             action = Action(name, checkable=True)
-            action.setChecked((column, order) == current)
-            action.triggered.connect(lambda _=False, c=column, o=order: self.sort_by(c, o))
+            action.setChecked(c == column)
+            action.triggered.connect(lambda _=False, c=c: self.sort_by(c, self.model.sort_order))
+            menu.addAction(action)
+        menu.addSeparator()
+        for name, o in (("Ascending (A–Z, oldest first)", Qt.AscendingOrder),
+                        ("Descending (Z–A, newest first)", Qt.DescendingOrder)):
+            action = Action(name, checkable=True)
+            action.setChecked(o == order)
+            action.triggered.connect(lambda _=False, o=o: self.sort_by(self.model.sort_column, o))
             menu.addAction(action)
         menu.exec(self.sort_btn.mapToGlobal(QPoint(0, self.sort_btn.height())), ani=False)
 
@@ -1815,7 +2224,7 @@ class VaultView(QWidget):
     def _scale_header(self, k):
         """The titles, search box and buttons around the list follow the list text size too, so the page
         stays in proportion (a small list under full-size buttons looked odd)."""
-        parts = [self.list_title, self.count, self.save_status, self.search, self.sort_btn, self.check_btn,
+        parts = [self.list_title, self.count, self.save_status, self.search, self.sort_btn,
                  self.new_btn, self.notes.title, self.notes.path, self.notes.modified]
         self.tree.setIconSize(QSize(round(16 * k), round(16 * k)))  # folder icons
         if not hasattr(self, "_header_base"):  # their normal sizes, measured once
@@ -1841,14 +2250,15 @@ class VaultView(QWidget):
         settings.setValue("list_text_size", size)
         self._list_text = size
         k = size / 100
-        self.delegate.font.setPixelSize(round(14 * k))
-        self.delegate.italic.setPixelSize(round(14 * k))
+        self.delegate.font.setPixelSize(round(13 * k))
+        self.delegate.italic.setPixelSize(round(13 * k))
         self.delegate.small.setPixelSize(round(13 * k))
         self.set_density(self._density)  # row height and icons follow the text
         # The UI library draws folder names in a fixed 13 px font unless an item carries its own.
         self._tree_font = getFont(round(13 * k))
         self._set_tree_icons()  # also gives every folder item the font
         self.notes.set_notes_px(round(self._notes_base_px * k))
+        self.notes.set_text_scale(k)
         self._scale_header(k)
         self.table.viewport().update()
         self.listTextChanged.emit(size)
@@ -1886,10 +2296,28 @@ class VaultView(QWidget):
     def set_colorize(self, on):
         self.delegate.colorize = on
         self.notes.set_revealed(self.notes.revealed)
+        self.table.viewport().update()
+
+    def _on_reveal(self, on):
+        """Show passwords: in the details and the key buttons' tooltips, for every entry (the list
+        itself shows only names)."""
+        self.model.set_show_passwords(on)
+        self.reveal.setIcon(FIF.HIDE if on else FIF.VIEW)
+        self.reveal.setToolTip("Hide passwords" if on else "Show passwords")
+        self.notes.set_revealed(on)
+        if self.editor is not None:
+            self.editor.password.set_revealed(on)
 
     def toggle_password(self):
         if self.current_entry():
             self.notes.set_revealed(not self.notes.revealed)
+
+    def change_password(self):
+        """Edits the selected entry with a newly generated password (from its health advice)."""
+        self.edit_entry()
+        if self.editor is not None and self.editor.entry is not None:
+            self.editor._generate()
+            self.editor.password.setFocus()
 
     def toggle_favourite(self):
         e = self.current_entry()
@@ -1946,21 +2374,77 @@ class VaultView(QWidget):
         folder = None if self.folder in (self.db.bin_id, FAVOURITES) else self.folder
         if folder and any(f["id"] == folder and f["in_bin"] for f in self.db.folders):
             folder = None
-        editor = EntryEditor(self.window(), self.db, folder_id=folder)
-        if editor.exec() and editor.op:
-            self.window().saver.submit(editor.op, f"New entry “{editor.op.title}”")
-            self.load(self.db, keep_state=True, select_uuid=editor.op.uuid)
-            self._auto_icon(editor.op)
+        self._open_editor(folder_id=folder)
 
     def edit_entry(self):
         e = self.current_entry()
         if not e or not self._editable():
             return
-        editor = EntryEditor(self.window(), self.db, entry=e)
-        if editor.exec() and editor.op:
-            self.window().saver.submit(editor.op, f"Edit of “{e['title']}”")
-            if "url" in editor.op.fields:
-                self._auto_icon(editor.op)
+        if self.editor is not None and self.editor.entry is not None and self.editor.entry["uuid"] == e["uuid"]:
+            self.editor.title.setFocus()  # already editing it
+            return
+        self._open_editor(entry=e)
+
+    # ---- editing in the details pane
+
+    def _open_editor(self, entry=None, folder_id=None):
+        """Shows the form in the details pane, beside the list (any other edit is finished first)."""
+        if not self.leave_editor():
+            return
+        self._show_page()
+        pane = EntryEditPane(self.details, self.db, entry, folder_id)
+        pane.password.set_revealed(self.model.show_passwords)  # follows the title bar's Show passwords
+        pane.saved.connect(lambda: self._editor_saved(pane))
+        pane.cancelled.connect(lambda: self._close_editor(pane))
+        current = self.current_entry()
+        self._editor_anchor = current["uuid"] if current else None
+        self.editor = pane
+        self.details.addWidget(pane)
+        self.details.setCurrentWidget(pane)
+        pane.title.setFocus()
+        if entry is None:
+            pane.title.selectAll()
+
+    def _close_editor(self, pane):
+        if pane is not self.editor:
+            return
+        self.editor = None
+        self.details.setCurrentWidget(self.notes)
+        self.details.removeWidget(pane)
+        pane.deleteLater()
+        if self.isVisible():
+            self.table.setFocus()
+
+    def _editor_saved(self, pane):
+        op, entry = pane.op, pane.entry
+        self._close_editor(pane)
+        if op is None:  # nothing changed
+            return
+        if entry is None:
+            self.window().saver.submit(op, f"New entry “{op.title}”")
+            self.load(self.db, keep_state=True, select_uuid=op.uuid)
+            self._auto_icon(op)
+        else:
+            self.window().saver.submit(op, f"Edit of “{entry['title']}”")
+            if "url" in op.fields:
+                self._auto_icon(op)
+
+    def leave_editor(self):
+        """Before showing something else in the details pane: asks whether to save changes being made.
+        False if they couldn't be saved (e.g. no title), so the form stays."""
+        pane = self.editor
+        if pane is None:
+            return True
+        if pane.has_changes():
+            title = pane.title.text().strip() or (pane.entry["title"] if pane.entry else "the new entry")
+            box = MessageBox("Save changes?", f"You've changed “{title}” and haven't saved it yet.", self.window())
+            box.yesButton.setText("Save")
+            box.cancelButton.setText("Don't save")
+            if box.exec():
+                pane.save()
+                return self.editor is None  # saved (else the form shows what's wrong)
+        self._close_editor(pane)
+        return True
 
     def _auto_icon(self, op):
         """Downloads the site's icon for a new entry or a changed website, if enabled."""
@@ -2379,11 +2863,11 @@ class PasswordGenerator(SimpleCardWidget):
         again.setToolTip("Generate another")
         again.clicked.connect(self.generate)
         top.addWidget(again)
-        close = TransparentToolButton(FIF.CLOSE)
-        close.setToolTip("Hide generator options")
-        close.clicked.connect(self.hide)
-        close.clicked.connect(self.closed)
-        top.addWidget(close)
+        self.close_btn = TransparentToolButton(FIF.CLOSE)
+        self.close_btn.setToolTip("Hide generator options")
+        self.close_btn.clicked.connect(self.hide)
+        self.close_btn.clicked.connect(self.closed)
+        top.addWidget(self.close_btn)
         root.addLayout(top)
 
         # Password options
@@ -2431,7 +2915,7 @@ class PasswordGenerator(SimpleCardWidget):
         row = QHBoxLayout()
         row.addWidget(BodyLabel("Separator"))
         self.separator = ComboBox()
-        self.separator.addItems(["-", ".", "_", "space"])
+        self.separator.addItems(["-", ".", "_", "space", "none"])
         self.separator.setCurrentText(setting("gen/separator", "-"))
         row.addWidget(self.separator)
         self.capitalize = CheckBox("Capitalise")
@@ -2477,7 +2961,7 @@ class PasswordGenerator(SimpleCardWidget):
                 lower=self.classes["lower"].isChecked(), digits=self.classes["digits"].isChecked(),
                 symbols=self.classes["symbols"].isChecked(), avoid_look_alikes=self.avoid.isChecked())
         else:
-            separator = " " if self.separator.currentText() == "space" else self.separator.currentText()
+            separator = {"space": " ", "none": ""}.get(self.separator.currentText(), self.separator.currentText())
             value, bits = generator.generate_passphrase(
                 self.word_count.value(), separator, self.capitalize.isChecked(), self.add_number.isChecked())
         self._save_options()
@@ -2498,11 +2982,15 @@ class PasswordGenerator(SimpleCardWidget):
 STRENGTH_COLORS = ["#d13438", "#ca5010", "#5c9e31", "#107c10"]  # weak, fair, good, excellent
 
 
-class EntryEditor(MessageBoxBase):
-    """Create or edit an entry. After exec(), `op` holds the change (or None)."""
+class EntryForm:
+    """The entry form (title, username, password with generator, website, 2FA, folder, notes) and its
+    checks, shared by the pop-up editor (EntryEditor) and the one in the details pane (EntryEditPane).
+    The host provides viewLayout (where the form goes), widget (the area username suggestions float
+    in) and yesButton (Enter in a field clicks it). After validate(), `op` holds the change (or None)."""
 
-    def __init__(self, parent, db, entry=None, folder_id=None):
-        super().__init__(parent)
+    in_pane = False  # in the details pane: the notes take the spare height, and the form scrolls there
+
+    def _build_form(self, db, entry=None, folder_id=None):
         self.db = db
         self.entry = entry
         self.op = None
@@ -2510,11 +2998,13 @@ class EntryEditor(MessageBoxBase):
         raw = entry["raw"] if entry else {f: "" for f in store.FIELDS}
 
         self.viewLayout.setSpacing(8)
-        self.viewLayout.addWidget(SubtitleLabel("Edit entry" if entry else "New entry"))
+        self.heading = SubtitleLabel("Edit entry" if entry else "New entry")
+        self.viewLayout.addWidget(self.heading)
 
         # The fields scroll if the window is too short to show them all (nothing gets squashed).
-        self.body = QWidget()
-        self.body.setStyleSheet("background: transparent;")
+        self.body = QWidget(objectName="formBody")
+        # Only the form itself: a plain "background: transparent" reached its tooltips too (drawn black)
+        self.body.setStyleSheet("QWidget#formBody { background: transparent; }")
         self.form = QVBoxLayout(self.body)
         self.form.setContentsMargins(0, 0, 10, 0)  # room for the scroll bar
         self.form.setSpacing(6)
@@ -2525,7 +3015,7 @@ class EntryEditor(MessageBoxBase):
         self.scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.scroll.scrollDelagate.verticalSmoothScroll.setSmoothMode(SmoothMode.NO_SMOOTH)
         self.scroll.setWidget(self.body)
-        self.viewLayout.addWidget(self.scroll)
+        self.viewLayout.addWidget(self.scroll, 1 if self.in_pane else 0)
 
         self.title = LineEdit()
         self.title.setText(raw["title"])
@@ -2551,6 +3041,8 @@ class EntryEditor(MessageBoxBase):
         self.show_pw.setToolTip("Show password")
         self.show_pw.toggled.connect(self._on_show)
         row.addWidget(self.show_pw)
+        if self.in_pane:  # the title bar's Show passwords button shows or hides it instead
+            self.show_pw.hide()
         self.gen_btn = TransparentPushButton(icon("SYNC", "ROBOT"), "Generate")
         self.gen_btn.setToolTip("Generate a new password (and show the options)")
         self.gen_btn.clicked.connect(self._generate)
@@ -2569,7 +3061,12 @@ class EntryEditor(MessageBoxBase):
         self.generator = PasswordGenerator()
         self.generator.generated.connect(self._use_generated)
         self.generator.closed.connect(self._fit)
-        self.generator.hide()
+        if self.in_pane:  # there's room: the options show from the start (Generate makes a password)
+            self.generator.close_btn.hide()
+            self.generator.length_label.setText(str(self.generator.length.value()))
+            self.generator.words_label.setText(str(self.generator.word_count.value()))
+        else:
+            self.generator.hide()
         self.form.addWidget(self.generator)
 
         self._field("Website", self.url)
@@ -2581,7 +3078,7 @@ class EntryEditor(MessageBoxBase):
 
         self.folder = ComboBox()
         current = entry["folder_id"] if entry else folder_id
-        choices = [(db.name, None)] + [(" › ".join(f["path"]), f["id"]) for f in db.folders
+        choices = [("Top level (no folder)", None)] + [(" › ".join(f["path"]), f["id"]) for f in db.folders
                                        if not f["in_bin"] or f["id"] == current]
         for text, folder in choices:
             self.folder.addItem(text, userData=folder)
@@ -2592,25 +3089,23 @@ class EntryEditor(MessageBoxBase):
         self.form.addWidget(caption("Notes"))
         self.notes = PlainTextEdit()
         self.notes.setPlainText(raw["notes"])
-        self.notes.setFixedHeight(76)
-        self.form.addWidget(self.notes)
+        if self.in_pane:  # the notes get whatever height is left
+            self.notes.setMinimumHeight(120)
+            self.form.addWidget(self.notes, 1)
+        else:
+            self.notes.setFixedHeight(76)
+            self.form.addWidget(self.notes)
 
         self.error = CaptionLabel("")
         self.error.setTextColor("#d13438", "#ff99a4")
         self.error.hide()
         self.viewLayout.addWidget(self.error)
 
-        self.yesButton.setText("Save" if entry else "Add entry")
-        self.cancelButton.setText("Cancel")
-        self.widget.setMinimumWidth(560)
-
         for line in (self.title, self.username, self.password, self.url):
             line.returnPressed.connect(self.yesButton.click)
         if entry is None:  # new entries start with a generated password
             self._generate()
         self._update_strength()
-        self._fit()
-        self.title.setFocus()
 
     def _field(self, label, widget):
         self.form.addWidget(caption(label))
@@ -2727,13 +3222,16 @@ class EntryEditor(MessageBoxBase):
         self.body.adjustSize()
         needed = self.body.sizeHint().height()
         self.body.setMinimumHeight(needed)  # never squash fields; scroll instead
+        if self.in_pane:  # the pane's layout gives the form the height it has
+            return
         window = self.parent().window() if self.parent() else None
         available = (window.height() if window else 800) - 196  # title, buttons and margins
         self.scroll.setFixedHeight(max(200, min(needed, available)))
 
     def _use_generated(self, value, bits):
         self._generated = (value, bits)
-        self.show_pw.setChecked(True)
+        if not self.in_pane:  # the pop-up shows a new password; the pane follows Show passwords
+            self.show_pw.setChecked(True)
         self.password.setText(value)
 
     def _update_strength(self):
@@ -2761,8 +3259,7 @@ class EntryEditor(MessageBoxBase):
             self.error.show()
             self.otp.setFocus()
             return False
-        values = dict(title=self.title.text().strip(), username=self.username.text(), password=self.password.text(),
-                      url=self.url.text().strip(), notes=self.notes.toPlainText(), otp=self.otp.text().strip())
+        values = self._values()
         folder = self.folder.currentData()
         if self.entry is None:
             self.op = Op("create", uuidlib.uuid4().hex, fields=values, all_fields=values, folder=folder,
@@ -2773,6 +3270,72 @@ class EntryEditor(MessageBoxBase):
                 self.op = Op("update", self.entry["uuid"], fields=changed, all_fields=values, folder=folder,
                              base_mtime=self.entry["base_mtime"], title=values["title"])
         return True
+
+    def _values(self):
+        return dict(title=self.title.text().strip(), username=self.username.text(), password=self.password.text(),
+                    url=self.url.text().strip(), notes=self.notes.toPlainText(), otp=self.otp.text().strip())
+
+    def has_changes(self):
+        """Anything typed or changed (a new entry's generated password alone doesn't count)."""
+        values = self._values()
+        if self.entry is None:
+            return any(values[k] for k in ("title", "username", "url", "notes", "otp"))
+        return (any(values[k] != self.entry["raw"][k] for k in values)
+                or self.folder.currentData() != self.entry["folder_id"])
+
+
+class EntryEditor(EntryForm, MessageBoxBase):
+    """Create or edit an entry in a pop-up (used from Password health). After exec(), `op` holds the
+    change (or None)."""
+
+    def __init__(self, parent, db, entry=None, folder_id=None):
+        MessageBoxBase.__init__(self, parent)
+        self._build_form(db, entry, folder_id)
+        self.yesButton.setText("Save" if entry else "Add entry")
+        self.cancelButton.setText("Cancel")
+        self.widget.setMinimumWidth(560)
+        self._fit()
+        self.title.setFocus()
+
+
+class EntryEditPane(EntryForm, QWidget):
+    """Create or edit an entry in the details pane, beside the list: the same form as the pop-up, with
+    Save and Cancel at the bottom (Ctrl+S saves, Esc cancels). Emits saved (op in `op`) or cancelled."""
+
+    saved = Signal()
+    cancelled = Signal()
+    in_pane = True
+
+    def __init__(self, parent, db, entry=None, folder_id=None):
+        QWidget.__init__(self, parent)
+        self.viewLayout = QVBoxLayout(self)
+        self.viewLayout.setContentsMargins(30, 20, 26, 14)
+        self.widget = self  # username suggestions float over the pane
+        self.yesButton = PrimaryPushButton("Save" if entry else "Add entry")
+        self.cancelButton = PushButton("Cancel")
+        self._build_form(db, entry, folder_id)
+        buttons = QHBoxLayout()
+        buttons.setSpacing(10)
+        buttons.addStretch(1)
+        for button in (self.cancelButton, self.yesButton):
+            button.setMinimumWidth(110)
+            buttons.addWidget(button)
+        self.viewLayout.addSpacing(4)
+        self.viewLayout.addLayout(buttons)
+        self.yesButton.setToolTip(shortcut_text("Save (Ctrl+S)"))
+        self.cancelButton.setToolTip("Cancel (Esc)")
+        self.yesButton.clicked.connect(self.save)
+        self.cancelButton.clicked.connect(self.cancelled)
+        local_shortcut("Ctrl+S", self, self.save)
+        # Esc closes the username suggestions first, if they're showing
+        local_shortcut("Esc", self, lambda: self._hide_suggestions() if self.suggestions.isVisible()
+                       else self.cancelled.emit())
+        self._fit()
+
+    def save(self):
+        self.op = None
+        if self.validate():
+            self.saved.emit()
 
 
 class NameDialog(MessageBoxBase):
@@ -3861,6 +4424,10 @@ class HealthView(QWidget):
         self.db = None
         self.issues = []
         self._by_entry, self.checked = {}, False
+        # Measure password strength (weak passwords) in every check, from unlocking on. (Waiting until
+        # Password health was opened saved no memory once a few entries had been looked at.)
+        self.strength = True
+        self.full = False  # the last check included strength
         self._strengths = {}  # {password: bits} until locked, so checks after an edit are quick
         self.filter = None
         self.dirty = True
@@ -3921,14 +4488,14 @@ class HealthView(QWidget):
         self.dirty = True
         if db is None:
             self.issues = []
-            self._by_entry, self.checked = {}, False
+            self._by_entry, self.checked, self.full = {}, False, False
             self._strengths = {}  # new dict: a check still running keeps its own (and then drops it)
             self.check_timer.stop()
             self._show()
             self.updated.emit()
         elif self.isVisible():
             self.refresh()
-        else:  # for the sidebar's score and the password labels: soon, in the background
+        else:  # for the score and the password labels: soon, in the background
             self.check_timer.start()
             if not self.checked:
                 self.updated.emit()  # "Checking…"
@@ -3945,11 +4512,11 @@ class HealthView(QWidget):
         self.check_timer.stop()
         entries = list(self.db.entries)
         self.empty.setText("Checking passwords…")
-        db, cache = self.db, self._strengths
-        run_in_background(self, lambda: health.report(entries, strength_cache=cache),
-                          lambda issues, error: self._done(db, issues, error))
+        db, cache, strength = self.db, self._strengths, self.strength
+        run_in_background(self, lambda: health.report(entries, strength_cache=cache, strength=strength),
+                          lambda issues, error: self._done(db, issues, error, strength))
 
-    def _done(self, db, issues, error):
+    def _done(self, db, issues, error, strength=True):
         if db is not self.db:  # locked or reloaded meanwhile
             return
         if error:
@@ -3960,18 +4527,21 @@ class HealthView(QWidget):
         for issue in self.issues:
             self._by_entry.setdefault(issue["entry"]["uuid"], {})[issue["issue"]] = (
                 issue["detail"] or health.ISSUES[issue["issue"]][0])
-        self.checked = True
+        self.checked, self.full = True, strength
+        # Every password's strength is remembered (until locked): the checker's word lists can go
+        generator.unload_strength_checker()
         self._show()
         self.updated.emit()
 
     def problems(self, uuid):
-        """An entry's problems as {issue: detail} ({} if none), or None until the check has run."""
+        """An entry's problems as {issue: detail} ({} if none), or None until a check has run. Before
+        Password health has been opened, weak passwords aren't included (see `full`)."""
         return self._by_entry.get(uuid, {}) if self.checked else None
 
     def score(self):
-        """(0-100, entries to fix), or None until the check has run. Passwords that are only old
-        don't lower the score; weak, reused, missing and expired ones do."""
-        if not self.checked or self.db is None:
+        """(0-100, entries to fix), or None until password strength has been measured (Password health
+        opened). Passwords that are only old don't lower the score; weak, reused, missing and expired do."""
+        if not self.full or self.db is None:
             return None
         live = [e for e in self.db.entries if not e["in_bin"] and not e["backup"]]
         to_fix = {i["entry"]["uuid"] for i in self.issues if i["issue"] != "old"}
@@ -4032,8 +4602,8 @@ class SettingsView(ScrollArea):
         self.setWidgetResizable(True)
         self.enableTransparentBackground()
         self.scrollDelagate.verticalSmoothScroll.setSmoothMode(SmoothMode.NO_SMOOTH)
-        page = QWidget()
-        page.setStyleSheet("background: transparent;")
+        page = QWidget(objectName="settingsPage")
+        page.setStyleSheet("QWidget#settingsPage { background: transparent; }")  # not its tooltips (black)
         self.setWidget(page)
         root = QVBoxLayout(page)
         root.setContentsMargins(36, 28, 36, 36)
@@ -4077,8 +4647,9 @@ class SettingsView(ScrollArea):
             "Clear clipboard after", "How long copied usernames, passwords and 2FA codes stay on the clipboard "
             "before Vault wipes them.", clipboard))
         root.addWidget(self._row(
-            "Minimise after double-click copy", "Double-clicking an entry copies its password and gets Vault "
-            "out of the way, ready to paste. Off: Vault stays open.", self._bool_switch("minimise_on_copy")))
+            "Minimise after copying", "Copying a username or password from the list (its buttons, or "
+            "double-clicking an entry for the password) gets Vault out of the way, ready to paste. "
+            "Off: Vault stays open.", self._bool_switch("minimise_on_copy")))
         idle = ComboBox()
         idle.addItems(list(IDLE_LOCK_CHOICES))
         idle.setCurrentText(next(k for k, v in IDLE_LOCK_CHOICES.items() if v == idle_lock_minutes()))
@@ -4146,6 +4717,12 @@ class SettingsView(ScrollArea):
         root.addWidget(self._row(
             "Entries without a website", "Guess each entry's website from its name (e.g. “British Gas” → "
             "britishgas.co.uk) and get its icon. You check every guess before anything changes.", finder))
+        # Password health's score; click for the full report (MainWindow connects it)
+        root.addSpacing(8)
+        root.addWidget(SubtitleLabel("Password health"))
+        self.health_card = HealthButton()
+        self.health_card.setCheckable(False)
+        root.addWidget(self.health_card)
         root.addStretch(1)
         root.addWidget(caption(f"Vault {VERSION}"), 0, Qt.AlignRight)
 
@@ -4208,20 +4785,26 @@ class UnlockDialog(MessageBoxBase):
         self.verifier = quickunlock.get_verifier() if quick else None
         self._worker = None
 
+        # A lock screen across the whole window (the window's own background, the padlock and name
+        # above the fields), rather than a box over a darkened copy of the window
+        mode, _accent, background = THEMES.get(theme_name(), THEMES["System"])
+        self.setMaskColor(QColor(background or DEFAULT_BACKGROUNDS[isDarkTheme()]))
+        self.widget.setGraphicsEffect(None)
+        self.widget.setStyleSheet("QFrame#centerWidget { background: transparent; border: none; }")
+        self.buttonGroup.setStyleSheet("QFrame#buttonGroup { background: transparent; border: none; }")
         self.viewLayout.setSpacing(10)
-        self.viewLayout.addWidget(SubtitleLabel("Unlock database"))
+        badge = QLabel()
+        badge.setPixmap(self._padlock(72))
+        self.viewLayout.addWidget(badge, 0, Qt.AlignHCenter)
+        name = TitleLabel("Vault")
+        self.viewLayout.addWidget(name, 0, Qt.AlignHCenter)
+        self.viewLayout.addSpacing(10)
 
-        file_row = QHBoxLayout()
+        # Just the database's name, the password and Unlock; choosing another file, making a new one
+        # or using a key file are small links underneath.
         self.file_label = caption("")
-        file_row.addWidget(self.file_label, 1)
-        choose = PushButton(FIF.FOLDER, "Choose…")
-        choose.clicked.connect(self._choose_file)
-        file_row.addWidget(choose)
-        self.new_btn = TransparentPushButton(FIF.ADD, "New…")
-        self.new_btn.setToolTip("Create a new, empty database")
-        self.new_btn.clicked.connect(self._new_database)
-        file_row.addWidget(self.new_btn)
-        self.viewLayout.addLayout(file_row)
+        self.file_label.setAlignment(Qt.AlignCenter)
+        self.viewLayout.addWidget(self.file_label)
 
         self.pw = PasswordLineEdit()
         self.pw.setPlaceholderText("Master password")
@@ -4229,30 +4812,77 @@ class UnlockDialog(MessageBoxBase):
         self.pw.textChanged.connect(self._update_button)
         self.viewLayout.addWidget(self.pw)
 
-        key_row = QHBoxLayout()
+        key_row = QHBoxLayout()  # only while a key file is chosen
+        key_row.addStretch(1)
         self.key_label = caption("")
-        key_row.addWidget(self.key_label, 1)
+        key_row.addWidget(self.key_label)
         self.key_clear = TransparentToolButton(FIF.CLOSE)
+        self.key_clear.setFixedSize(24, 24)
+        self.key_clear.setIconSize(QSize(10, 10))
         self.key_clear.setToolTip("Don't use a key file")
         self.key_clear.clicked.connect(lambda: self._set_keyfile(""))
         key_row.addWidget(self.key_clear)
-        key_btn = PushButton(icon("FINGERPRINT", "CERTIFICATE"), "Key file…")
-        key_btn.clicked.connect(self._choose_keyfile)
-        key_row.addWidget(key_btn)
+        key_row.addStretch(1)
         self.viewLayout.addLayout(key_row)
 
         self.error = CaptionLabel("")
         self.error.setTextColor("#d13438", "#ff99a4")
         self.error.setWordWrap(True)
+        self.error.setAlignment(Qt.AlignCenter)
         self.error.hide()
         self.viewLayout.addWidget(self.error)
 
+        links = QHBoxLayout()
+        links.setSpacing(2)
+        links.addStretch(1)
+        choose = self._link("Open another…", "Open a different KeePass database file", self._choose_file)
+        self.new_btn = self._link("New database…", "Create a new, empty database", self._new_database)
+        key_btn = self._link("Key file…", "Unlock with a key file as well as (or instead of) the password",
+                             self._choose_keyfile)
+        for link in (choose, self.new_btn, key_btn):
+            links.addWidget(link)
+        links.addStretch(1)
+        self.links = links
+
         self.yesButton.setText("Unlock")
         self.cancelButton.setText("Quit")
-        self.widget.setMinimumWidth(460)
+        self.cancelButton.hide()  # closing the window quits; the screen needs only Unlock
+        self.vBoxLayout.addLayout(self.links)  # under the Unlock button
+        self.vBoxLayout.addSpacing(12)
+        self.widget.setMinimumWidth(420)
+        self.widget.setMaximumWidth(420)
         self._set_path(self.path if self.path and Path(self.path).exists() else "")
         self._set_keyfile(self.keyfile if self.keyfile and Path(self.keyfile).exists() else "")
         self.pw.setFocus()
+
+    @staticmethod
+    def _link(text, tip, on_click):
+        """A small, quiet text button for the lock screen's less-used choices."""
+        link = HyperlinkButton(url="", text=text)
+        link.setToolTip(tip)
+        link.clicked.connect(on_click)
+        font = link.font()
+        font.setPixelSize(12)
+        link.setFont(font)
+        return link
+
+    def _padlock(self, size):
+        """Vault's padlock on an accent-coloured rounded square: white on the light theme's deeper accent,
+        black on the dark theme's bright one."""
+        ratio = self.devicePixelRatioF()
+        picture = QPixmap(round(size * ratio), round(size * ratio))
+        picture.fill(Qt.transparent)
+        picture.setDevicePixelRatio(ratio)
+        p = QPainter(picture)
+        p.setRenderHint(QPainter.Antialiasing)
+        p.setPen(Qt.NoPen)
+        p.setBrush(QColor(themeColor()))
+        p.drawRoundedRect(QRectF(0, 0, size, size), size / 4.2, size / 4.2)
+        s = round(size * 0.5)
+        QIcon(AppIcon("lock").path(Theme.LIGHT if isDarkTheme() else Theme.DARK)).paint(
+            p, QRect((size - s) // 2, (size - s) // 2, s, s))
+        p.end()
+        return picture
 
     def _quick_ready(self):
         return bool(self.quick and self.verifier and self.quick.matches(self.path, self.keyfile))
@@ -4275,8 +4905,9 @@ class UnlockDialog(MessageBoxBase):
 
     def _set_keyfile(self, path):
         self.keyfile = path
-        self.key_label.setText(f"Key file: {Path(path).name}" if path else "No key file")
+        self.key_label.setText(f"Key file: {Path(path).name}" if path else "")
         self.key_label.setToolTip(path)
+        self.key_label.setVisible(bool(path))
         self.key_clear.setVisible(bool(path))
         self._update_button()
 
@@ -4475,13 +5106,15 @@ class PrivacyCover(QWidget):
 
 
 class SideButton(QAbstractButton):
-    """A sidebar row below the folders (Settings): highlighted, like a folder row, while its page shows."""
+    """A sidebar row below the folders (New entry, Settings): highlighted, like a folder row, while its
+    page shows."""
 
-    def __init__(self, fluent_icon, text, parent=None):
+    def __init__(self, fluent_icon, text, parent=None, checkable=True):
         super().__init__(parent)
         self.fluent_icon = fluent_icon
         self.setText(text)
-        self.setCheckable(True)
+        self.setCheckable(checkable)
+        self.setFont(getFont(14))
         self.setFixedHeight(36)
         self.setAttribute(Qt.WA_Hover)
         self.setFocusPolicy(Qt.NoFocus)
@@ -4506,7 +5139,7 @@ class SideButton(QAbstractButton):
         s = 16
         self.fluent_icon.render(p, QRect(int(r.x()) + 14, (self.height() - s) // 2, s, s))
         p.setPen(QColor(Qt.white if c else Qt.black))
-        p.setFont(getFont(14))
+        p.setFont(self.font())
         p.drawText(r.adjusted(44, 0, 0, 0), Qt.AlignLeft | Qt.AlignVCenter, self.text())
 
 
@@ -4583,38 +5216,25 @@ class HealthButton(QAbstractButton):
 
 
 class Sidebar(QWidget):
-    """The window's left column: New entry; All entries, Favourites and the folders; then Password
-    health (with its score) and Settings."""
+    """The window's left column: All entries, Favourites and the folders, then New entry. (Settings, with
+    Password health in it, is a button in the title bar.)"""
 
     def __init__(self, window):
         super().__init__(window)
         self.main = window
         vault = window.vault
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 50, 6, 12)  # below the title bar
+        layout.setContentsMargins(10, 56, 6, 12)  # below the title bar
         layout.setSpacing(2)
-        vault.new_btn.setFixedHeight(38)
-        new_row = QHBoxLayout()
-        new_row.setContentsMargins(4, 0, 4, 0)
-        new_row.addWidget(vault.new_btn)
-        layout.addLayout(new_row)
-        layout.addSpacing(10)
         layout.addWidget(vault.tree, 1)
         layout.addSpacing(8)
-        self.health = HealthButton()
-        self.health.clicked.connect(lambda: window.switchTo(window.health))
-        layout.addWidget(self.health)
-        layout.addSpacing(4)
-        self.settings = SideButton(FIF.SETTING, "Settings")
-        self.settings.clicked.connect(lambda: window.switchTo(window.settings_view))
-        layout.addWidget(self.settings)
+        layout.addWidget(vault.new_btn)
         window.stackedWidget.currentChanged.connect(self.update_selection)
         self.setFixedWidth(250)
 
     def update_selection(self, *_):
         page = self.main.stackedWidget.currentWidget()
-        self.health.setChecked(page is self.main.health)
-        self.settings.setChecked(page is self.main.settings_view)
+        self.main.settings_btn.setChecked(page in (self.main.settings_view, self.main.health))
         self.main.vault.folder_delegate.inactive = page is not self.main.vault
         self.main.vault.tree.viewport().update()
 
@@ -4715,13 +5335,23 @@ class MainWindow(FluentWindow):
         i = bar.hBoxLayout.indexOf(bar.titleLabel) + 1
         bar.hBoxLayout.insertStretch(i, 1)
         bar.hBoxLayout.insertWidget(i + 1, search, 0, Qt.AlignVCenter)
+        # Settings (with Password health in it): a second click goes back to the list
+        self.settings_btn = TransparentToggleToolButton(FIF.SETTING)
+        self.settings_btn.setToolTip("Settings and Password health")
+        self.settings_btn.setFocusPolicy(Qt.NoFocus)
+        self.settings_btn.clicked.connect(lambda: self.switchTo(
+            self.vault if self.stackedWidget.currentWidget() in (self.settings_view, self.health)
+            else self.settings_view))
+        self.settings_view.health_card.clicked.connect(lambda: self.switchTo(self.health))
         self.lock_btn = TransparentToolButton(AppIcon("lock"))
         self.lock_btn.setToolTip(shortcut_text("Lock (Ctrl+L)"))
         self.lock_btn.setFocusPolicy(Qt.NoFocus)
         self.lock_btn.clicked.connect(self.lock)
         right = bar.hBoxLayout.count() - 1  # before the window buttons
-        bar.hBoxLayout.insertWidget(right, self.lock_btn, 0, Qt.AlignVCenter)
-        bar.hBoxLayout.insertSpacing(right + 1, 10)
+        for i, button in enumerate((self.vault.reveal, self.vault.check_btn, self.settings_btn, self.lock_btn)):
+            button.setFocusPolicy(Qt.NoFocus)
+            bar.hBoxLayout.insertWidget(right + 2 * i, button, 0, Qt.AlignVCenter)
+            bar.hBoxLayout.insertSpacing(right + 2 * i + 1, 10 if button is self.lock_btn else 2)
         if sys.platform != "darwin":
             bar.hBoxLayout.setContentsMargins(16, 0, 0, 0)
         # Searching from Password health or Settings shows the list again
@@ -4735,9 +5365,10 @@ class MainWindow(FluentWindow):
     @locked.setter
     def locked(self, value):
         self._locked = value
-        if hasattr(self, "lock_btn"):  # the search box and lock button only while unlocked
-            self.vault.search.setVisible(not value)
-            self.lock_btn.setVisible(not value)
+        if hasattr(self, "lock_btn"):  # the search box and the title bar's buttons only while unlocked
+            for part in (self.vault.search, self.vault.reveal, self.vault.check_btn, self.settings_btn,
+                         self.lock_btn):
+                part.setVisible(not value)
 
     def _unlocked_shortcut(self, action):
         """Window-wide shortcuts work only while unlocked, and not behind an open dialog."""
@@ -4745,7 +5376,7 @@ class MainWindow(FluentWindow):
             action()
 
     def _on_health_checked(self):
-        self.sidebar.health.set_score(self.health.score(), self.health.db is not None)
+        self.settings_view.health_card.set_score(self.health.score(), self.health.db is not None)
         self.vault.notes.update_chip()
 
     def toggle_full_screen(self):
@@ -4880,7 +5511,8 @@ class MainWindow(FluentWindow):
 
     def _live_resize_widgets(self):
         v, bar = self.vault, self.titleBar
-        return [v.search, v.sort_btn, v.check_btn, self.lock_btn, bar.minBtn, bar.maxBtn, bar.closeBtn]
+        return [v.search, v.sort_btn, v.reveal, v.check_btn, self.settings_btn, self.lock_btn, bar.minBtn,
+                bar.maxBtn, bar.closeBtn]
 
     def _set_live_resize(self, on):
         self._live_resize = on
@@ -4998,6 +5630,7 @@ class MainWindow(FluentWindow):
         if self.locked and self.saver.db is None:
             self._show_unlock()
             return
+        self.vault.notes.save_notes()  # notes still being typed
         self.saver.flush(self._lock_now)  # save any pending edits first
 
     def _lock_now(self):
@@ -5090,7 +5723,9 @@ class MainWindow(FluentWindow):
             QApplication.quit()
 
     def closeEvent(self, event):
-        # Save pending edits before closing.
+        # Save pending edits (and notes still being typed) before closing.
+        if not self._closing and not self.locked:
+            self.vault.notes.save_notes()
         if not self._closing and self.saver.pending:
             event.ignore()
             self.saver.flush(self._close_now)
