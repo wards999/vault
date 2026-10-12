@@ -62,7 +62,7 @@ if sys.platform == "win32":  # for smooth resizing and the taskbar pictures (Mai
     from qframelesswindow.windows.c_structures import LPNCCALCSIZE_PARAMS
     import taskbarpreview
 
-VERSION = "1.0.28"  # releases are tagged v<VERSION> (see .github/workflows/build.yml)
+VERSION = "1.1.0"  # releases are tagged v<VERSION> (see .github/workflows/build.yml)
 IDLE_LOCK_CHOICES = {"Never": 0, "After 1 minute": 1, "After 2 minutes": 2, "After 5 minutes": 5,
                      "After 10 minutes": 10, "After 15 minutes": 15, "After 30 minutes": 30, "After 1 hour": 60,
                      "After 2 hours": 120, "After 5 hours": 300}
