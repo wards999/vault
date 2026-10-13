@@ -1998,6 +1998,8 @@ class VaultView(QWidget):
         select_uuid = select_uuid or (current["uuid"] if current and keep_state else None)
         self.db = db
         self.model.icons = EntryIcons(db)
+        if not keep_state:  # opening the database (at launch, after unlocking): Settings → Show passwords when unlocked
+            self.reveal.setChecked(setting("show_passwords_on_open", False))
         self.folder = None
         self.search.blockSignals(True)
         self.search.clear()
@@ -4822,6 +4824,11 @@ class SettingsView(ScrollArea):
                 f"After you've unlocked with your master password, unlock again with {verifier.name} until "
                 "you quit Vault. Your master password is never saved.",
                 self._bool_switch("quick_unlock", on_quick_unlock)))
+        root.addWidget(self._row(
+            "Show passwords when unlocked",
+            "Start with passwords shown (the eye in the title bar on) each time you open or unlock the "
+            "database. Off: they start hidden. Locking always hides them.",
+            self._bool_switch("show_passwords_on_open", default=False)))
         root.addWidget(self._row(
             "Colour-code passwords",
             "When shown, colour uppercase, lowercase, digits and symbols differently.",
