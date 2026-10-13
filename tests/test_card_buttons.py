@@ -1,6 +1,7 @@
 """Hovering over an entry in the list shows buttons on its card to copy the username, the password and
-(if it has one) the 2FA code, then a star. A click copies straight away, shows a tick, and doesn't select
-the entry or start dragging it; the star stars or unstars that entry. In-app Qt events only (no OS input)."""
+(if it has one) the 2FA code, then a star. A click copies straight away, shows a tick and selects the entry
+(so it's still marked when Vault is brought back), without starting a drag; the star stars or unstars that
+entry and leaves the selection alone. In-app Qt events only (no OS input)."""
 import sys
 import helpers  # repo path; temporary folder, settings and test databases
 from helpers import ok, wait, finish
@@ -39,7 +40,8 @@ QApplication.clipboard().clear()
 QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, buttons()["username"].center()); QTest.qWait(150)
 ok("username button: username copied", QApplication.clipboard().text() == e["username"])
 ok("…its button shows a tick", v.delegate.done == (e["uuid"], "username"))
-ok("…and the selected entry didn't change", v.table.currentIndex().row() == other, v.table.currentIndex().row())
+ok("…and that entry is selected now", v.table.currentIndex().row() == row, v.table.currentIndex().row())
+ok("…the details show it", v.notes.entry is not None and v.notes.entry["uuid"] == e["uuid"])
 ok("…the tick goes after a moment", wait(lambda: v.delegate.done is None, 3))
 
 QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, buttons()["password"].center()); QTest.qWait(150)
@@ -49,6 +51,7 @@ ok("2FA button: the current code copied", QApplication.clipboard().text() == tot
 ok("Vault stayed open (Minimise after copying is off)", not w.isMinimized())
 
 entry = lambda: next(x for x in w.saver.db.entries if x["uuid"] == uuid)
+v.table.selectRow(other); QTest.qWait(200)  # the star leaves the selection alone
 ok("the star's tooltip: Add to Favourites", v._button_at(buttons()["favourite"].center())[2] == "Add to Favourites")
 QTest.mouseClick(viewport, Qt.LeftButton, Qt.NoModifier, buttons()["favourite"].center())
 ok("star clicked: a favourite", wait(lambda: entry()["favourite"], 5))

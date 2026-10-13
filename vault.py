@@ -589,9 +589,9 @@ class EntryDelegate(TableItemDelegate):
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.NoPen)
         selected = index.row() in self.selectedRows
-        if selected:
+        if selected:  # easy to find again (e.g. after copying from it and bringing Vault back)
             fill = QColor(themeColor())
-            fill.setAlpha(52 if dark else 36)
+            fill.setAlpha(80 if dark else 58)
         elif index.row() in (self.hoverRow, self.pressedRow):
             fill = QColor(255, 255, 255, 14) if dark else QColor(0, 0, 0, 11)
         elif self.stripes and index.row() % 2:  # zebra stripes: every other row faintly shaded
@@ -601,9 +601,15 @@ class EntryDelegate(TableItemDelegate):
         if fill is not None:
             painter.setBrush(fill)
             painter.drawRoundedRect(r, 8, 8)
-        if selected:  # the accent bar the UI library's lists show by the selected row
+        if selected:  # a thin outline, and the accent bar the UI library's lists show by the selected row
+            edge = QColor(themeColor())
+            edge.setAlpha(170 if dark else 150)
+            painter.setPen(QPen(edge, 1))
+            painter.setBrush(Qt.NoBrush)
+            painter.drawRoundedRect(QRectF(r).adjusted(0.5, 0.5, -0.5, -0.5), 8, 8)
+            painter.setPen(Qt.NoPen)
             painter.setBrush(QColor(themeColor()))
-            painter.drawRoundedRect(QRectF(r.x() + 1, r.y() + r.height() * 0.3, 3, r.height() * 0.4), 1.5, 1.5)
+            painter.drawRoundedRect(QRectF(r.x() + 1, r.y() + r.height() * 0.2, 4, r.height() * 0.6), 2, 2)
 
         tile = QRect(r.x() + 12, r.center().y() - self.tile // 2 + 1, self.tile, self.tile)
         draw_entry_tile(painter, tile, e, self.model.icons)
@@ -1498,7 +1504,8 @@ class NotesPanel(QWidget):
             return
         values = {name: e["raw"][name] for name in store.FIELDS} | {"notes": text}
         self.window().saver.submit(Op("update", e["uuid"], fields={"notes": text}, all_fields=values,
-                                      base_mtime=e["base_mtime"], title=e["title"]), f"Notes of “{e['title']}”")
+                                      base_mtime=e["base_mtime"], base_version=store.base_version(e), title=e["title"]),
+                                   f"Notes of “{e['title']}”")
 
     # ---- the extra sections
 
@@ -2259,7 +2266,9 @@ class VaultView(QWidget):
             if field == "favourite":  # the star: stars or unstars this card's entry (selected or not)
                 self.toggle_favourite(e)
                 return True
-            # Copies straight away; the selection stays where it is (and nothing starts dragging)
+            # Copies straight away, and selects the entry, so it's still marked when Vault is brought back
+            # (nothing starts dragging)
+            self.table.selectRow(self.model.entries.index(e))
             if field == "totp":
                 value, label = totp.code(e["totp"])[0], "2FA code"
             else:
@@ -3411,7 +3420,8 @@ class EntryForm:
             changed = {k: v for k, v in values.items() if v != self.entry["raw"][k]}
             if changed or folder != self.entry["folder_id"]:
                 self.op = Op("update", self.entry["uuid"], fields=changed, all_fields=values, folder=folder,
-                             base_mtime=self.entry["base_mtime"], title=values["title"])
+                             base_mtime=self.entry["base_mtime"], base_version=store.base_version(self.entry),
+                             title=values["title"])
         return True
 
     def _values(self):
@@ -3797,7 +3807,8 @@ class HistoryDialog(MessageBoxBase):
         if fields:
             e = self.entry
             self.op = Op("update", e["uuid"], fields=fields, all_fields={**e["raw"], **fields}, folder=False,
-                         base_mtime=e["base_mtime"], title=fields.get("title", e["title"]))
+                         base_mtime=e["base_mtime"], base_version=store.base_version(e),
+                         title=fields.get("title", e["title"]))
         return True
 
 
@@ -4162,7 +4173,7 @@ class FindIconsDialog(MessageBoxBase):
             self.ops.append(Op("set_icon", e["uuid"], icon=png, icon_name=host, title=e["title"]))
             if fill and not e["url"]:
                 self.ops.append(Op("update", e["uuid"], fields={"url": f"https://{host}"},
-                                   base_mtime=e["base_mtime"], title=e["title"]))
+                                   base_mtime=e["base_mtime"], base_version=store.base_version(e), title=e["title"]))
         return True
 
     def done(self, code):
@@ -4242,6 +4253,7 @@ class SaveController(QObject):
         self.db = db
         self.unsaved, self.queued, self.flush_callbacks = [], [], []
         self.undo_stack = []  # (label, inverse ops) for this session
+        self.own = {}  # the modified times our own edits produced (see store.apply_op): not conflicts
         self.busy = self.failed = False
         self.last_backup = 0.0
         self.last_stat = self._stat()
@@ -4262,6 +4274,7 @@ class SaveController(QObject):
         self.poll_timer.stop()
         self.db = None
         self.undo_stack = []  # holds old values (passwords), so drop it when locking
+        self.own = {}
 
     @property
     def pending(self):
@@ -4294,15 +4307,17 @@ class SaveController(QObject):
         inverses = []
         for op in ops:
             inverse = store.inverse_op(kp, op) if undoable else None
-            conflict = store.apply_op(kp, op, force=force)
+            conflict = store.apply_op(kp, op, force=force, own=self.own)
             if conflict is None:
                 self.unsaved.append(op)
                 inverses.append(inverse)
                 continue
-            # The entry changed since the editor was opened (e.g. after a reload).
+            # The entry changed elsewhere since the editor was opened (e.g. brought in by a reload).
             for resolved in self._resolve(conflict):
+                if resolved is conflict.op:  # "keep mine": don't ask again about this entry's other edits
+                    store.seen_theirs(kp, resolved, self.own)
                 inverses.append(store.inverse_op(kp, resolved) if undoable else None)
-                store.apply_op(kp, resolved, force=True)
+                store.apply_op(kp, resolved, force=True, own=self.own)
                 self.unsaved.append(resolved)
         inverses = [i for i in reversed(inverses) if i]
         if undoable and inverses:
@@ -4393,12 +4408,14 @@ class SaveController(QObject):
             return
         replayed = []
         for op in self.unsaved:
-            conflict = store.apply_op(fresh, op)
+            conflict = store.apply_op(fresh, op, own=self.own)  # (our earlier edits re-applied here aren't conflicts)
             if conflict is None:
                 replayed.append(op)
             else:
                 for resolved in self._resolve(conflict):
-                    store.apply_op(fresh, resolved, force=True)
+                    if resolved is conflict.op:  # "keep mine": don't ask again about this entry's other edits
+                        store.seen_theirs(fresh, resolved, self.own)
+                    store.apply_op(fresh, resolved, force=True, own=self.own)
                     replayed.append(resolved)
         db.replace_kp(fresh, data)
         self.unsaved = replayed

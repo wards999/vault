@@ -266,6 +266,7 @@ def entry_snapshot(e, ids, names, in_bin):
         raw=raw,  # unresolved values, for editing
         totp=totp.params(otp, fields),
         base_mtime=mtime_utc,  # to detect edits made elsewhere while we edit
+        base_fingerprint=version_of(el, fields, mtime_utc)[1],  # with base_mtime, its version (base_version())
         password_changed=changed,
         modified=mtime.strftime("%b %d, %Y %H:%M") if mtime else "",
         modified_key=mtime.isoformat() if mtime else "",
@@ -328,6 +329,7 @@ class Op:
     all_fields: dict = dc_field(default_factory=dict)  # every field after the edit (to re-create it)
     folder: object = False  # destination / parent folder id (None = root); False = don't move
     base_mtime: object = None  # entry's modified time when the user started the edit
+    base_version: object = None  # and its version (see version_of): edits of ours since then aren't conflicts
     title: str = ""  # for messages
     element: bytes = None  # serialized XML for "insert" / "folder_insert"
     icon: object = None  # "set_icon"/"folder_icon": PNG bytes (new image), str (existing icon UUID) or "" (none)
@@ -438,9 +440,68 @@ def _set_custom_icon(entry_element, icon_uuid):
     current.text = icon_uuid
 
 
-def apply_op(kp, op, force=False):
+CREATED = "created"  # in an `own` record: the entry was made by an edit of ours
+
+
+def apply_op(kp, op, force=False, own=None):
     """Applies `op` to `kp`. Returns a Conflict instead if the entry was changed or deleted
-    elsewhere since the user started editing it (unless `force`)."""
+    elsewhere since the user started editing it (unless `force`).
+
+    own: a record of the versions our own edits produced this session, filled in here. An edit whose entry
+    has since changed only through our own edits (starred while being edited, notes saved after the editor
+    opened, several edits re-applied on top of a reloaded file) isn't a conflict: both lead back to the
+    same version. Versions are told apart by their contents as well as their time (kept to the second), so
+    another device's edit in the same second as one of ours isn't mistaken for ours."""
+    entry = None if op.kind.startswith("folder_") else _find_entry(kp, op.uuid)
+    before = _version(entry) if entry is not None else (CREATED, None) if op.kind in ("create", "insert") else None
+    conflict = _apply_op(kp, op, force, own)
+    if own is not None and conflict is None and before is not None:
+        after = _find_entry(kp, op.uuid)
+        if after is not None and _version(after) != before:
+            own[(op.uuid, _version(after))] = before  # this exact version came from that one
+    return conflict
+
+
+def seen_theirs(kp, op, own):
+    """The user chose to keep their edit `op` over a change made elsewhere: later edits of ours that started
+    from the same version (e.g. more unsaved edits re-applied after a reload) don't ask again."""
+    entry = _find_entry(kp, op.uuid)
+    if entry is not None and op.base_version is not None:
+        own[(op.uuid, _version(entry))] = op.base_version
+
+
+def version_of(element, fields, mtime):
+    """(modified time, fingerprint of the contents): two versions saved in the same second (times are
+    kept to the second) are still told apart."""
+    return mtime, hash((tuple(sorted(fields.items())), element.findtext("Tags") or ""))
+
+
+def _version(entry):
+    return version_of(entry._element, string_fields(entry._element), entry.mtime)
+
+
+def base_version(e):
+    """The version of a snapshot entry, for an edit starting from it (Op.base_version)."""
+    return e["base_mtime"], e["base_fingerprint"]
+
+
+def _origin(own, entry_uuid, version):
+    """The version this one comes from, following our own edits back."""
+    seen = set()
+    while (entry_uuid, version) in own and version not in seen:
+        seen.add(version)
+        version = own[(entry_uuid, version)]
+    return version
+
+
+def _same_origin(own, entry, op):
+    """True if the entry's current version and the one the edit started from both come, through our own
+    edits only, from the same version."""
+    return (op.base_version is not None
+            and _origin(own, op.uuid, _version(entry)) == _origin(own, op.uuid, op.base_version))
+
+
+def _apply_op(kp, op, force, own):
     kind = op.kind
     if kind.startswith("folder_"):
         _apply_folder_op(kp, op)
@@ -472,7 +533,8 @@ def apply_op(kp, op, force=False):
         return None if kind in ("trash", "delete", "move", "set_icon", "favourite") else Conflict(op, "deleted")
 
     if kind == "update":
-        if not force and op.base_mtime is not None and entry.mtime != op.base_mtime:
+        if (not force and op.base_mtime is not None and entry.mtime != op.base_mtime
+                and not (own and _same_origin(own, entry, op))):
             return Conflict(op, "changed")
         entry.save_history()  # keep the previous version, as KeePass does
         for name, value in op.fields.items():
