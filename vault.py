@@ -12,6 +12,14 @@ import os
 import re
 from collections import Counter
 import sys
+
+if __name__ == "__main__" and sys.argv[1:2] == ["--ask-path"]:  # Windows' file dialog for Vault (see ask_path),
+    import pathpicker                                          # before the rest of the app is loaded
+    sys.exit(pathpicker.main(sys.argv[2]))
+
+import json
+import subprocess
+import tempfile
 import threading
 import time
 import uuid as uuidlib
@@ -20,7 +28,7 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 from PySide6.QtCore import (
-    Qt, QAbstractTableModel, QEvent, QModelIndex, QObject, QRect, QSettings, QSize,
+    Qt, QAbstractTableModel, QEvent, QEventLoop, QModelIndex, QObject, QRect, QSettings, QSize,
     QTimer, QUrl, Signal, QMimeData, QByteArray, QPoint, QPointF, QRectF,
 )
 from PySide6.QtGui import (
@@ -262,15 +270,18 @@ def shortcut_text(text):
     return text.replace("Ctrl + ", "⌘ ").replace("Ctrl+", "⌘") if sys.platform == "darwin" else text
 
 
-def trim_memory():
+def trim_memory(light=False):
     """Vault runs all day, mostly minimised or locked: then hand the memory it isn't using back to the
     system. Windows: empty the working set (pages come back as soon as they're needed). macOS:
     return the memory malloc keeps after it's been freed (e.g. the decrypted database after locking);
-    memory still in use is left alone, and macOS compresses idle apps' memory by itself."""
-    import gc
-    from PySide6.QtGui import QPixmapCache
-    QPixmapCache.clear()  # rebuilt when next drawn; empty, its 30-second clean-up timer stops too
-    gc.collect()
+    memory still in use is left alone, and macOS compresses idle apps' memory by itself.
+    light: only hand pages back (the later trims while minimised: nothing has been freed since the first,
+    so a garbage collection, ~0.1 s through a large database, would gain nothing)."""
+    if not light:
+        import gc
+        from PySide6.QtGui import QPixmapCache
+        QPixmapCache.clear()  # rebuilt when next drawn; empty, its 30-second clean-up timer stops too
+        gc.collect()
     if sys.platform == "win32":
         import ctypes
         kernel32, psapi = ctypes.windll.kernel32, ctypes.windll.psapi
@@ -331,6 +342,91 @@ def file_size(size):
         if size < 1024 or unit == "MB":
             return f"{size} {unit}" if unit == "bytes" else f"{size:.0f} {unit}" if size >= 10 else f"{size:.1f} {unit}"
         size /= 1024
+
+
+def _native_dialog(parent, caption, start, name_filter, save, folder):
+    if folder:
+        return QFileDialog.getExistingDirectory(parent, caption, start)
+    ask = QFileDialog.getSaveFileName if save else QFileDialog.getOpenFileName
+    return ask(parent, caption, start, name_filter)[0]
+
+
+def _visible_window_of(pid):
+    """A visible top-level window of process `pid` (Windows), or None."""
+    import ctypes
+    from ctypes import wintypes
+    user32 = ctypes.windll.user32
+    found = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def visit(hwnd, _):
+        owner_pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner_pid))
+        if owner_pid.value == pid and user32.IsWindowVisible(hwnd):
+            found.append(hwnd)
+            return False
+        return True
+
+    user32.EnumWindows(visit, 0)
+    return found[0] if found else None
+
+
+def ask_path(parent, caption, start="", name_filter="", save=False, folder=False):
+    """A file (or folder) chosen by the user, or "". The system's own dialog. On Windows it's shown by a helper
+    process (pathpicker.py): there it loads every installed shell extension (Google Drive, Dropbox, OneDrive,
+    antivirus…), which would otherwise stay in Vault until it quits. Vault waits (its window disabled, as for
+    any dialog of its own) and stays responsive. If the helper can't run, the dialog is shown here instead.
+    macOS: shown here (its open panel loads nothing into Vault)."""
+    if sys.platform != "win32":
+        return _native_dialog(parent, caption, start, name_filter, save, folder)
+    import ctypes
+    window = parent.window()
+    owner = int(window.winId())
+    fd, result = tempfile.mkstemp(prefix="vault-path-", suffix=".json")
+    os.close(fd)
+    os.remove(result)  # (just a unique name: the helper writes the file once the dialog closes)
+    request = dict(caption=caption, start=start, filter=name_filter, owner=owner, result=result,
+                   mode="folder" if folder else "save" if save else "open")
+    me = [sys.executable] if getattr(sys, "frozen", False) else [sys.executable, str(Path(__file__).resolve())]
+    user32 = ctypes.windll.user32
+    startup = subprocess.STARTUPINFO()
+    startup.dwFlags |= 0x80  # STARTF_FORCEOFFFEEDBACK: no "app starting" pointer while the helper loads
+    try:
+        user32.AllowSetForegroundWindow(-1)  # (ASFW_ANY) so the helper's dialog comes to the front
+        helper = subprocess.Popen(me + ["--ask-path", json.dumps(request)], stdin=subprocess.DEVNULL,
+                                  stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                  creationflags=subprocess.CREATE_NO_WINDOW, startupinfo=startup)
+    except OSError:
+        return _native_dialog(parent, caption, start, name_filter, save, folder)
+    user32.EnableWindow(owner, False)  # like a dialog of its own: Vault can't be used meanwhile
+    loop = QEventLoop()  # until the result is written (or the helper ends without one)
+
+    def check():
+        if os.path.exists(result) or helper.poll() is not None:
+            loop.quit()
+        elif user32.GetForegroundWindow() == owner:  # Vault clicked: the dialog back in front, as a dialog of its own
+            dialog = _visible_window_of(helper.pid)
+            if dialog:
+                user32.SetForegroundWindow(dialog)
+
+    try:
+        poll = QTimer(interval=50, timeout=check)
+        poll.start()
+        loop.exec()
+        poll.stop()
+    finally:
+        user32.EnableWindow(owner, True)
+        window.activateWindow()
+    try:
+        with open(result, encoding="utf-8") as f:
+            return json.load(f).get("path", "")
+    except (OSError, ValueError):  # the helper failed: show the dialog here after all
+        return _native_dialog(parent, caption, start, name_filter, save, folder)
+    finally:
+        try:
+            os.remove(result)
+        except OSError:
+            pass
 
 
 def secret_mime_data(text):
@@ -1687,7 +1783,7 @@ class NotesPanel(QWidget):
         data = db.attachment(self.entry["uuid"], name) if db and self.entry else None
         if data is None:
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Save attachment", str(Path.home() / "Downloads" / name))
+        path = ask_path(self, "Save attachment", str(Path.home() / "Downloads" / name), save=True)
         if not path:
             return
         try:
@@ -3611,8 +3707,8 @@ class IconPickerDialog(MessageBoxBase):
         self._set({"icon": "", "icon_id": self.default_id}, "Chosen: default")
 
     def _image_chosen(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Choose an icon image", str(Path.home()),
-                                              "Images (*.png *.jpg *.jpeg *.ico *.bmp *.gif *.svg)")
+        path = ask_path(self, "Choose an icon image", str(Path.home()),
+                        "Images (*.png *.jpg *.jpeg *.ico *.bmp *.gif *.svg)")
         if not path:
             return
         try:
@@ -3917,7 +4013,7 @@ class NewDatabaseDialog(MessageBoxBase):
         self.place_label.setText(f"Saved as {self._file()}")
 
     def _choose_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Where to keep the database", self.folder)
+        folder = ask_path(self, "Where to keep the database", self.folder, folder=True)
         if folder:
             self.folder = folder
             self._update_place()
@@ -3999,7 +4095,7 @@ class ChangeMasterDialog(MessageBoxBase):
 
     def _choose_keyfile(self):
         start = str(Path(self.keyfile).parent) if self.keyfile else str(Path(self.db.path).parent)
-        path, _ = QFileDialog.getOpenFileName(self, "Choose key file", start)
+        path = ask_path(self, "Choose key file", start)
         if path:
             self._set_keyfile(path)
 
@@ -5114,9 +5210,8 @@ class UnlockDialog(MessageBoxBase):
         self._update_button()
 
     def _choose_file(self):
-        path, _ = QFileDialog.getOpenFileName(
-            self, "Open KeePass database", self._start_dir(self.path),
-            "KeePass databases (*.kdbx *.k);;All files (*)")
+        path = ask_path(self, "Open KeePass database", self._start_dir(self.path),
+                        "KeePass databases (*.kdbx *.k);;All files (*)")
         if path:
             self._set_path(path)
             self.pw.setFocus()
@@ -5132,7 +5227,7 @@ class UnlockDialog(MessageBoxBase):
             self.yesButton.click()
 
     def _choose_keyfile(self):
-        path, _ = QFileDialog.getOpenFileName(self, "Choose key file", self._start_dir(self.keyfile or self.path))
+        path = ask_path(self, "Choose key file", self._start_dir(self.keyfile or self.path))
         if path:
             self._set_keyfile(path)
 
@@ -5455,7 +5550,7 @@ class Sidebar(QWidget):
 
 class MainWindow(FluentWindow):
     COVER_DELAY_MS = 150  # time for the covered frame to reach the screen before minimising
-    LATE_TRIM_MS = 65_000  # the second memory trim after minimising, once idle worker threads have exited
+    LATE_TRIMS_MS = (35_000, 65_000)  # light memory trims after minimising, once idle worker threads have exited
     _locked = True  # see the `locked` property
 
     def __init__(self):
@@ -5469,13 +5564,14 @@ class MainWindow(FluentWindow):
         for button in self.titleBar.findChildren(QAbstractButton):
             button.setFocusPolicy(Qt.NoFocus)
         self.privacy_cover = PrivacyCover(self)
-        # A second trim once minimised: Windows' and Qt's idle worker threads exit by themselves about 30 and
-        # 60 s in, and each exit pages every loaded DLL back in (the working set crept from 1.5 to 10 MB).
-        # Fires once, only while minimised; restoring cancels it. Windows only: macOS has no such thread
-        # clean-up, and by then it has compressed Vault's idle memory, which the trim's gc.collect() (it reads
-        # every Python object) would make it decompress again.
-        self.late_trim = QTimer(self, singleShot=True, interval=self.LATE_TRIM_MS)
-        self.late_trim.timeout.connect(lambda: self.isMinimized() and trim_memory())
+        # Light trims once minimised (Windows): idle worker threads exit by themselves, Qt's image threads 30 s
+        # after the last repaint and Windows' own about 60 s in, and each exit pages every loaded DLL back in
+        # (the working set crept from 1.5 to 10 MB). One after each, then nothing; restoring cancels them.
+        # Not on macOS: no such thread clean-up there.
+        self.late_trim = QTimer(self, singleShot=True)
+        self.late_trim.timeout.connect(self._late_trim)
+        self._late_trims_left = []
+        self.setWindowTitle("Vault")
         self.setWindowTitle("Vault")
         self.resize(1360, 800)
         self.locked = True
@@ -5661,7 +5757,8 @@ class MainWindow(FluentWindow):
                     self.privacy_cover.show_over()
                 QTimer.singleShot(1500, lambda: self.isMinimized() and trim_memory())
                 if sys.platform == "win32":
-                    self.late_trim.start()
+                    self._late_trims_left = list(self.LATE_TRIMS_MS)
+                    self.late_trim.start(self._late_trims_left[0])
             else:
                 self.late_trim.stop()
                 if self.privacy_cover.isVisible():
@@ -5672,6 +5769,15 @@ class MainWindow(FluentWindow):
             if not self.isMinimized() and getattr(self, "_unlock_when_restored", False):
                 self._unlock_when_restored = False
                 QTimer.singleShot(self.COVER_DELAY_MS, self._show_unlock)
+
+    def _late_trim(self):
+        """One of the light trims after minimising; then the next, if any (the delays count from minimising)."""
+        if not self.isMinimized():
+            return
+        trim_memory(light=True)
+        done = self._late_trims_left.pop(0)
+        if self._late_trims_left:
+            self.late_trim.start(self._late_trims_left[0] - done)
 
     def _uncover(self):
         if not self.isMinimized():
