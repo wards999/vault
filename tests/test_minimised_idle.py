@@ -44,6 +44,9 @@ quit_timer = QTimer(singleShot=True, interval=10_000)
 loop = QEventLoop(); quit_timer.timeout.connect(loop.quit)
 timers.on = True; quit_timer.start(); loop.exec(); timers.on = False
 ok("minimised for 10 s: no timer fired at all", not timers.seen, dict(timers.seen))
+WINDOWS = sys.platform == "win32"  # the second trim is Windows only
+ok("…the second memory trim is still to come (Windows, once idle threads have exited)",
+   w.late_trim.isActive() == WINDOWS)
 
 # Something changes on another device while Vault is minimised
 other = PyKeePass(str(path), password=helpers.PW)
@@ -61,4 +64,17 @@ ok("restored: changes made elsewhere are picked up at once",
 ok("restored: file checks running again", w.saver.poll_timer.isActive())
 w.vault.refresh(select_uuid=next(e for e in w.saver.db.entries if e["title"] == "GitHub")["uuid"]); QTest.qWait(300)
 ok("restored: 2FA countdown running again", notes.totp_timer.isActive())
+ok("restored: the second trim is cancelled", not w.late_trim.isActive())
+
+# The trims, sped up: one 1.5 s after minimising, on Windows a second later, then nothing more
+trims = []
+real_trim = vault.trim_memory
+vault.trim_memory = lambda: trims.append(1) or real_trim()
+w.late_trim.setInterval(2500)
+w.showMinimized(); QTest.qWait(6000)
+ok(f"minimised: memory trimmed {'twice' if WINDOWS else 'once'}, then left alone",
+   len(trims) == (2 if WINDOWS else 1), len(trims))
+ok("…the second trim's timer is done", not w.late_trim.isActive())
+w.showNormal(); QTest.qWaitForWindowExposed(w)
+vault.trim_memory = real_trim
 finish()

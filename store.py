@@ -198,6 +198,14 @@ def is_favourite(tags):
     return any(t.lower() in _FAVOURITE_TAGS for t in tags)
 
 
+NOTE_TAG = "Note"  # a secure note: an entry that only holds text (no login), listed under Notes
+NOTE_ICON = 7  # KeePass's notepad icon, so other apps show notes as notes too
+
+
+def is_note(tags):
+    return any(t.lower() == "note" for t in tags)
+
+
 def is_backup(names, in_bin=False):
     """In a folder called "Backup" (at any level): where KeePass 1, and files converted from it,
     kept old copies of entries. The Recycle Bin takes precedence."""
@@ -280,6 +288,7 @@ def entry_snapshot(e, ids, names, in_bin):
     entry["fields"] = extra  # [(name, value, hidden)]
     entry["tags"] = split_tags(el.findtext("Tags"))
     entry["favourite"] = is_favourite(entry["tags"])
+    entry["note"] = is_note(entry["tags"])
     files = []
     for b in el.findall("Binary"):
         ref = b.find("Value")
@@ -309,6 +318,7 @@ class Op:
     Entries:  "create", "update", "trash" (to the Recycle Bin), "delete" (permanent),
               "move" (to `folder`), "insert" (restore/duplicate from `element`), "set_icon",
               "favourite" (fields={"on": True/False}: adds or removes the Favourite tag).
+              A "create" with fields["note"] makes a secure note (the Note tag and notepad icon).
     Folders:  "folder_create", "folder_rename", "folder_trash", "folder_delete",
               "folder_move" (to parent `folder`), "folder_insert", "folder_icon".
     """
@@ -447,6 +457,9 @@ def apply_op(kp, op, force=False):
         new.uuid = uuidlib.UUID(hex=op.uuid)
         if values["otp"]:
             _set_otp(new, values["otp"])
+        if source.get("note"):
+            new.tags = [NOTE_TAG]
+            new.icon = str(NOTE_ICON)
         return None
 
     if kind == "insert":

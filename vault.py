@@ -364,16 +364,20 @@ class AppIcon(FluentIconBase):
 # ---------------------------------------------------------------- database
 
 FAVOURITES = "*favourites"  # the sidebar's Favourites row (real folder ids are hex UUIDs)
+NOTES = "*notes"  # the sidebar's Notes row: the secure notes, wherever they're filed
 FOLDERS_HEADING = "*heading"  # the sidebar's "Folders" heading row
+VIEWS = (FAVOURITES, NOTES)  # sidebar rows that list entries but aren't folders
 
 
 def in_folder(entry, folder_id):
     """True if the entry is in the folder or any of its subfolders (None is the root: everything
-    outside the Recycle Bin; FAVOURITES: the starred entries)."""
+    outside the Recycle Bin; FAVOURITES: the starred entries; NOTES: the secure notes)."""
     if folder_id is None:
         return not entry["in_bin"]
     if folder_id == FAVOURITES:
         return entry["favourite"] and not entry["in_bin"]
+    if folder_id == NOTES:
+        return entry["note"] and not entry["in_bin"]
     return folder_id in entry["folder_ids"]
 
 
@@ -552,17 +556,22 @@ class EntryDelegate(TableItemDelegate):
                ("password", AppIcon("key"), "Copy password (Ctrl+C)"),
                ("totp", icon("STOP_WATCH", "HISTORY"), "Copy 2FA code (Ctrl+T)")]
     BUTTON_WIDTH = 48  # each one is the full height of the card: easy to hit
+    STAR_WIDTH = 36  # the star, last on every card (so it lines up down the list), stars or unstars it
 
     hover_pos = None  # the mouse, over the list (for the button under it)
     done = None  # (entry uuid, field) just copied: its button shows a tick for a moment
 
     def actions(self, e, rect):
-        """[(field, icon, tooltip, QRect)] of the hover buttons for this card, right-aligned."""
+        """[(field, icon, tooltip, QRect)] of the hover buttons for this card, right-aligned: the copy
+        buttons for the fields it has, then the star ("favourite", drawn rather than an icon)."""
         shown = [a for a in self.ACTIONS if (e["totp"] if a[0] == "totp" else e[a[0]])]
-        w, r = self.BUTTON_WIDTH, rect.adjusted(6, 2, -8, -2)
-        x = r.right() + 1 - len(shown) * (w + 2) + 2
+        if e["favourite"] or self.model.draggable:  # (a read-only database: only a favourite's star)
+            shown.append(("favourite", None, "Remove from Favourites" if e["favourite"] else "Add to Favourites"))
+        r = rect.adjusted(6, 2, -8, -2)
+        widths = [self.STAR_WIDTH if field == "favourite" else self.BUTTON_WIDTH for field, _i, _t in shown]
+        x = r.right() + 1 - sum(w + 2 for w in widths) + 2
         out = []
-        for field, ico, tip in shown:
+        for (field, ico, tip), w in zip(shown, widths):
             out.append((field, ico, tip, QRect(x, r.y(), w, r.height())))
             x += w + 2
         return out
@@ -599,7 +608,8 @@ class EntryDelegate(TableItemDelegate):
         tile = QRect(r.x() + 12, r.center().y() - self.tile // 2 + 1, self.tile, self.tile)
         draw_entry_tile(painter, tile, e, self.model.icons)
         x, right = tile.right() + 13, r.right() - 10
-        # The copy buttons: always there, very pale, and full strength on the card under the mouse
+        # The copy buttons and star: always there, very pale, and full strength on the card under the
+        # mouse (a favourite's star is always gold)
         c = 255 if dark else 0
         hovered = index.row() == self.hoverRow
         for field, ico, _tip, rect in self.actions(e, option.rect):
@@ -609,15 +619,23 @@ class EntryDelegate(TableItemDelegate):
             s = 16
             spot = QRect(rect.x() + (rect.width() - s) // 2, rect.y() + (rect.height() - s) // 2, s, s)
             done = self.done == (e["uuid"], field)
-            painter.setOpacity(1 if hovered or done else 0.28)
-            (FIF.ACCEPT if done else ico).render(painter, spot)
+            if field == "favourite":
+                star = star_path(QRectF(spot).adjusted(1, 1, -1, -1))
+                if e["favourite"]:
+                    painter.setBrush(STAR_COLOR)
+                    painter.drawPath(star)
+                else:  # quieter than the copy buttons: faint, and only full strength under the mouse
+                    on_star = hovered and self.hover_pos is not None and rect.contains(self.hover_pos)
+                    painter.setOpacity(1 if on_star else 0.45 if hovered else 0.18)
+                    painter.setPen(QPen(self.muted, 1.1))
+                    painter.setBrush(Qt.NoBrush)
+                    painter.drawPath(star)
+                    painter.setPen(Qt.NoPen)
+            else:
+                painter.setOpacity(1 if hovered or done else 0.28)
+                (FIF.ACCEPT if done else ico).render(painter, spot)
             painter.setOpacity(1)
             right = min(right, rect.x() - 6)
-        if e["favourite"]:
-            s = 14
-            painter.setBrush(STAR_COLOR)
-            painter.drawPath(star_path(QRectF(right - s, r.center().y() - s / 2, s, s)))
-            right -= s + 8
         if e["attachments"]:
             s = 14
             painter.setOpacity(0.6)
@@ -745,7 +763,7 @@ class FolderTree(TreeWidget):
         if item is None:
             return None
         target = item.data(0, Qt.UserRole)
-        if target == FOLDERS_HEADING:
+        if target in (FOLDERS_HEADING, NOTES):  # (a login dropped on Notes doesn't become a note)
             return None
         if target == FAVOURITES:  # entries dropped there are starred
             return item if md.hasFormat(ENTRY_MIME) else None
@@ -2004,6 +2022,11 @@ class VaultView(QWidget):
         favourites.setFlags(favourites.flags() & ~Qt.ItemIsDragEnabled)
         favourites.setToolTip(0, "Star an entry to keep it here (drop entries here to star them)")
         self.tree.addTopLevelItem(favourites)
+        notes = QTreeWidgetItem([f"Notes  ({sum(in_folder(e, NOTES) for e in db.entries)})"])
+        notes.setData(0, Qt.UserRole, NOTES)
+        notes.setFlags(notes.flags() & ~Qt.ItemIsDragEnabled)
+        notes.setToolTip(0, "Secure notes: text kept in the vault, with no login (New note adds one)")
+        self.tree.addTopLevelItem(notes)
         if db.folders:
             heading = QTreeWidgetItem([""])
             heading.setData(0, Qt.UserRole, FOLDERS_HEADING)
@@ -2011,7 +2034,7 @@ class VaultView(QWidget):
             heading.setFlags(Qt.NoItemFlags)  # not selectable; its + is handled in eventFilter
             heading.setToolTip(0, "New folder" if db.writable else "")
             self.tree.addTopLevelItem(heading)
-        items = {None: root_item, FAVOURITES: favourites}
+        items = {None: root_item, FAVOURITES: favourites, NOTES: notes}
         for f in db.folders:
             n = sum(in_folder(e, f["id"]) for e in db.entries)
             item = QTreeWidgetItem([f"{f['name']}  ({n})"])
@@ -2073,7 +2096,7 @@ class VaultView(QWidget):
                 item.setData(0, Qt.FontRole, self._tree_font)  # Settings → List text size
             kind = item.data(0, Qt.UserRole)
             own = None  # the folder's own icon from the database (as KeePass shows it), if it has one
-            if (kind not in (None, FAVOURITES, FOLDERS_HEADING) and not item.data(0, Qt.UserRole + 1)
+            if (kind not in (None, *VIEWS, FOLDERS_HEADING) and not item.data(0, Qt.UserRole + 1)
                     and self.model.icons and item.data(0, Qt.UserRole + 2)):
                 own = self.model.icons.folder(item.data(0, Qt.UserRole + 2))
             if kind == FOLDERS_HEADING:
@@ -2084,6 +2107,8 @@ class VaultView(QWidget):
                 item.setIcon(0, icon("LIBRARY", "FOLDER").icon())
             elif kind == FAVOURITES:
                 item.setIcon(0, star_icon(True))
+            elif kind == NOTES:
+                item.setIcon(0, icon("QUICK_NOTE", "DOCUMENT").icon())
             elif item.data(0, Qt.UserRole + 1):
                 item.setIcon(0, FIF.DELETE.icon())
             else:
@@ -2136,7 +2161,12 @@ class VaultView(QWidget):
             self.list_title.setText(item.text(0).rsplit("  (", 1)[0] if item else self.db.name)
         # Browsing the Backup folder itself: everything there is a backup, so show it normally
         self.model.dim_backups = bool(q) or not any(f["id"] == self.folder and f["backup"] for f in self.db.folders)
-        self.count.setText(f"{len(entries)} entries")
+        noun = ("note", "notes") if self.folder == NOTES and not q else ("entry", "entries")
+        self.count.setText(f"{len(entries)} {noun[len(entries) != 1]}")
+        note = self.folder == NOTES  # in Notes, the sidebar's button adds a note instead
+        self.new_btn.setText("New note" if note else "New entry")
+        self.new_btn.setToolTip(shortcut_text(f"New {'note' if note else 'entry'} (Ctrl+N)"))
+        self.new_btn.update()
         self.model.set_entries(entries)
         rows = [i for i, e in enumerate(self.model.entries) if e["uuid"] == select_uuid]
         if rows:
@@ -2224,6 +2254,9 @@ class VaultView(QWidget):
         if kind == QEvent.MouseButtonPress and event.button() == Qt.LeftButton:
             self.tip_timer.stop()
             QToolTip.hideText()
+            if field == "favourite":  # the star: stars or unstars this card's entry (selected or not)
+                self.toggle_favourite(e)
+                return True
             # Copies straight away; the selection stays where it is (and nothing starts dragging)
             if field == "totp":
                 value, label = totp.code(e["totp"])[0], "2FA code"
@@ -2249,7 +2282,7 @@ class VaultView(QWidget):
         e, field, tip = hit
         shown = self.model.show_passwords or (self.notes.revealed and self.notes.entry is e)
         value = {"username": e["username"], "password": e["password"] if shown else MASK,
-                 "totp": totp.code(e["totp"])[0] if field == "totp" else ""}[field]
+                 "totp": totp.code(e["totp"])[0] if field == "totp" else "", "favourite": tip}[field]
         rect = next(r for f, _i, _t, r in self.delegate.actions(e, self.table.visualRect(
             self.model.index(self.model.entries.index(e), 0))) if f == field)
         if field == "password" and shown and value:  # colour-coded, like the details
@@ -2407,8 +2440,8 @@ class VaultView(QWidget):
             self.editor._generate()
             self.editor.password.setFocus()
 
-    def toggle_favourite(self):
-        e = self.current_entry()
+    def toggle_favourite(self, e=None):
+        e = e or self.current_entry()
         if not e or not self._editable():
             return
         on = not e["favourite"]
@@ -2459,10 +2492,10 @@ class VaultView(QWidget):
     def new_entry(self):
         if not self._editable():
             return
-        folder = None if self.folder in (self.db.bin_id, FAVOURITES) else self.folder
+        folder = None if self.folder in (self.db.bin_id, *VIEWS) else self.folder
         if folder and any(f["id"] == folder and f["in_bin"] for f in self.db.folders):
             folder = None
-        self._open_editor(folder_id=folder)
+        self._open_editor(folder_id=folder, note=self.folder == NOTES)
 
     def edit_entry(self):
         e = self.current_entry()
@@ -2475,12 +2508,12 @@ class VaultView(QWidget):
 
     # ---- editing in the details pane
 
-    def _open_editor(self, entry=None, folder_id=None):
+    def _open_editor(self, entry=None, folder_id=None, note=False):
         """Shows the form in the details pane, beside the list (any other edit is finished first)."""
         if not self.leave_editor():
             return
         self._show_page()
-        pane = EntryEditPane(self.details, self.db, entry, folder_id)
+        pane = EntryEditPane(self.details, self.db, entry, folder_id, note)
         pane.password.set_revealed(self.model.show_passwords)  # follows the title bar's Show passwords
         pane.saved.connect(lambda: self._editor_saved(pane))
         pane.cancelled.connect(lambda: self._close_editor(pane))
@@ -2509,7 +2542,7 @@ class VaultView(QWidget):
         if op is None:  # nothing changed
             return
         if entry is None:
-            self.window().saver.submit(op, f"New entry “{op.title}”")
+            self.window().saver.submit(op, f"New {'note' if op.fields.get('note') else 'entry'} “{op.title}”")
             self.load(self.db, keep_state=True, select_uuid=op.uuid)
             self._auto_icon(op)
         else:
@@ -2612,7 +2645,7 @@ class VaultView(QWidget):
             return
         if parent is False:
             parent = self.folder
-        if parent == FAVOURITES:
+        if parent in VIEWS:
             parent = None
         record = self._folder_record(parent)
         if record and record["in_bin"]:
@@ -2677,7 +2710,7 @@ class VaultView(QWidget):
                                      f"“{record['name']}”")
 
     def _on_entries_dropped(self, uuids, target):
-        if not self._editable():
+        if not self._editable() or target == NOTES:  # (the tree doesn't offer Notes as a drop target)
             return
         by_id = {e["uuid"]: e for e in self.db.entries}
         if target == FAVOURITES:  # dropped on Favourites: starred, and left in their folders
@@ -2726,7 +2759,7 @@ class VaultView(QWidget):
 
     def _folder_menu(self, pos):
         item = self.tree.itemAt(pos)
-        if item is None or not self._editable() or item.data(0, Qt.UserRole) in (FAVOURITES, FOLDERS_HEADING):
+        if item is None or not self._editable() or item.data(0, Qt.UserRole) in (*VIEWS, FOLDERS_HEADING):
             return
         folder_id = item.data(0, Qt.UserRole)
         in_bin = bool(item.data(0, Qt.UserRole + 1))
@@ -2803,7 +2836,14 @@ class VaultView(QWidget):
 
     def _context_menu(self, pos):
         index = self.table.indexAt(pos)
-        if not index.isValid():
+        if not index.isValid():  # empty space below the entries: New entry (New note in Notes)
+            if self._editable():  # (an edit in progress is finished first, as with the button)
+                kind = "note" if self.folder == NOTES else "entry"
+                menu = RoundMenu(parent=self)
+                action = Action(FIF.ADD, f"New {kind}", triggered=self.new_entry)
+                action.setShortcut(QKeySequence("Ctrl+N"))
+                menu.addAction(action)
+                menu.exec(self.table.viewport().mapToGlobal(pos), ani=False)
             return
         self.table.selectRow(index.row())
         e = self.model.data(index, Qt.UserRole)
@@ -3078,15 +3118,17 @@ class EntryForm:
 
     in_pane = False  # in the details pane: the notes take the spare height, and the form scrolls there
 
-    def _build_form(self, db, entry=None, folder_id=None):
+    def _build_form(self, db, entry=None, folder_id=None, note=False):
         self.db = db
         self.entry = entry
         self.op = None
         self._generated = None  # (value, bits) of the last generated password
         raw = entry["raw"] if entry else {f: "" for f in store.FIELDS}
+        self.note = entry["note"] if entry else note  # a secure note: just a title, folder and the text
+        kind = "note" if self.note else "entry"
 
         self.viewLayout.setSpacing(8)
-        self.heading = SubtitleLabel("Edit entry" if entry else "New entry")
+        self.heading = SubtitleLabel(f"Edit {kind}" if entry else f"New {kind}")
         self.viewLayout.addWidget(self.heading)
 
         # The fields scroll if the window is too short to show them all (nothing gets squashed).
@@ -3107,7 +3149,7 @@ class EntryForm:
 
         self.title = LineEdit()
         self.title.setText(raw["title"])
-        self.title.setPlaceholderText("e.g. GitHub")
+        self.title.setPlaceholderText("e.g. Wi-Fi details" if self.note else "e.g. GitHub")
         self.username = LineEdit()
         self.username.setText(raw["username"])
         self.url = LineEdit()
@@ -3118,6 +3160,12 @@ class EntryForm:
         self.password.textChanged.connect(self._update_strength)
 
         self._field("Title", self.title)
+        # The login fields, in a box of their own: hidden for a note (unless it has a login after all,
+        # e.g. one added in KeePassXC, which mustn't be hidden while it's edited)
+        self.login_box = QWidget()
+        outer, self.form = self.form, QVBoxLayout(self.login_box)
+        self.form.setContentsMargins(0, 0, 0, 0)
+        self.form.setSpacing(6)
         self._field("Username", self.username)
         self._setup_username_suggestions()
 
@@ -3163,6 +3211,9 @@ class EntryForm:
         self.otp.setText(raw["otp"])
         self.otp.setPlaceholderText("Optional: the site's 2FA secret key or otpauth:// link")
         self._field("2FA (authenticator code)", self.otp)
+        self.form = outer
+        self.form.addWidget(self.login_box)
+        self.login_box.setVisible(not self.note or any(raw[f] for f in ("username", "password", "url", "otp")))
 
         self.folder = ComboBox()
         current = entry["folder_id"] if entry else folder_id
@@ -3191,7 +3242,7 @@ class EntryForm:
 
         for line in (self.title, self.username, self.password, self.url):
             line.returnPressed.connect(self.yesButton.click)
-        if entry is None:  # new entries start with a generated password
+        if entry is None and not self.note:  # new entries start with a generated password
             self._generate()
         self._update_strength()
 
@@ -3337,7 +3388,7 @@ class EntryForm:
 
     def validate(self):
         if not self.title.text().strip():
-            self.error.setText("Give the entry a title.")
+            self.error.setText(f"Give the {'note' if self.note else 'entry'} a title.")
             self.error.show()
             self.title.setFocus()
             return False
@@ -3350,6 +3401,8 @@ class EntryForm:
         values = self._values()
         folder = self.folder.currentData()
         if self.entry is None:
+            if self.note:
+                values["note"] = True  # tagged as a note when it's created
             self.op = Op("create", uuidlib.uuid4().hex, fields=values, all_fields=values, folder=folder,
                          title=values["title"])
         else:
@@ -3394,14 +3447,14 @@ class EntryEditPane(EntryForm, QWidget):
     cancelled = Signal()
     in_pane = True
 
-    def __init__(self, parent, db, entry=None, folder_id=None):
+    def __init__(self, parent, db, entry=None, folder_id=None, note=False):
         QWidget.__init__(self, parent)
         self.viewLayout = QVBoxLayout(self)
         self.viewLayout.setContentsMargins(30, 20, 26, 14)
         self.widget = self  # username suggestions float over the pane
-        self.yesButton = PrimaryPushButton("Save" if entry else "Add entry")
+        self.yesButton = PrimaryPushButton("Save" if entry else "Add note" if note else "Add entry")
         self.cancelButton = PushButton("Cancel")
-        self._build_form(db, entry, folder_id)
+        self._build_form(db, entry, folder_id, note)
         buttons = QHBoxLayout()
         buttons.setSpacing(10)
         buttons.addStretch(1)
@@ -5356,6 +5409,7 @@ class Sidebar(QWidget):
 
 class MainWindow(FluentWindow):
     COVER_DELAY_MS = 150  # time for the covered frame to reach the screen before minimising
+    LATE_TRIM_MS = 65_000  # the second memory trim after minimising, once idle worker threads have exited
     _locked = True  # see the `locked` property
 
     def __init__(self):
@@ -5369,6 +5423,13 @@ class MainWindow(FluentWindow):
         for button in self.titleBar.findChildren(QAbstractButton):
             button.setFocusPolicy(Qt.NoFocus)
         self.privacy_cover = PrivacyCover(self)
+        # A second trim once minimised: Windows' and Qt's idle worker threads exit by themselves about 30 and
+        # 60 s in, and each exit pages every loaded DLL back in (the working set crept from 1.5 to 10 MB).
+        # Fires once, only while minimised; restoring cancels it. Windows only: macOS has no such thread
+        # clean-up, and by then it has compressed Vault's idle memory, which the trim's gc.collect() (it reads
+        # every Python object) would make it decompress again.
+        self.late_trim = QTimer(self, singleShot=True, interval=self.LATE_TRIM_MS)
+        self.late_trim.timeout.connect(lambda: self.isMinimized() and trim_memory())
         self.setWindowTitle("Vault")
         self.resize(1360, 800)
         self.locked = True
@@ -5553,11 +5614,15 @@ class MainWindow(FluentWindow):
                 if self.locked:
                     self.privacy_cover.show_over()
                 QTimer.singleShot(1500, lambda: self.isMinimized() and trim_memory())
-            elif self.privacy_cover.isVisible():
-                if getattr(self, "_unlock_when_restored", False):
-                    QTimer.singleShot(self.COVER_DELAY_MS, self._uncover)  # until the unlock screen is up
-                else:
-                    self.privacy_cover.hide()  # it's only needed while minimised: no flash of it on restore
+                if sys.platform == "win32":
+                    self.late_trim.start()
+            else:
+                self.late_trim.stop()
+                if self.privacy_cover.isVisible():
+                    if getattr(self, "_unlock_when_restored", False):
+                        QTimer.singleShot(self.COVER_DELAY_MS, self._uncover)  # until the unlock screen is up
+                    else:
+                        self.privacy_cover.hide()  # it's only needed while minimised: no flash of it on restore
             if not self.isMinimized() and getattr(self, "_unlock_when_restored", False):
                 self._unlock_when_restored = False
                 QTimer.singleShot(self.COVER_DELAY_MS, self._show_unlock)

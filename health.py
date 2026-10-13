@@ -45,7 +45,8 @@ def report(entries, now=None, strength_cache=None, strength=True):
     for e in live:
         password = e["password"]
         if not password:
-            issues.append(dict(issue="empty", entry=e, detail="", sort=0))
+            if not e.get("note"):  # a secure note has no password to begin with
+                issues.append(dict(issue="empty", entry=e, detail="", sort=0))
             continue
         if strength and password not in strength_cache:
             strength_cache[password] = generator.estimate_bits(password)
