@@ -1955,7 +1955,11 @@ class VaultView(QWidget):
                               ("Ctrl+U", self.open_url), ("Return", self.edit_entry), ("Enter", self.edit_entry),
                               ("Ctrl+E", self.edit_entry), ("Delete", self.delete_entry),
                               ("Ctrl+T", self.copy_totp), ("Ctrl+D", self.duplicate_entry),
-                              ("Ctrl+H", self.show_history)):
+                              ("Ctrl+H", self.show_history),
+                              # Single keys, like the card's buttons (U, P and T no longer jump to entries
+                              # starting with those letters; the other letters still do)
+                              ("U", lambda: self._key_copy("username")), ("P", lambda: self._key_copy("password")),
+                              ("T", lambda: self._key_copy("totp"))):
             local_shortcut(keys, self.table, handler)
         self.table.setMinimumHeight(120)
 
@@ -2471,6 +2475,24 @@ class VaultView(QWidget):
                 self._minimise_after_release()
         else:
             self.edit_entry()
+
+    def _key_copy(self, field):
+        """U, P or T in the list: copies the selected entry's username, password or 2FA code as its card's
+        button does (a tick on the button, then Settings → Minimise after copying)."""
+        e = self.current_entry()
+        if not e or not (e["totp"] if field == "totp" else e[field]):
+            return
+        if field == "totp":
+            value, label = totp.code(e["totp"])[0], "2FA code"
+        else:
+            value, label = e[field], field.capitalize()
+        minimise = setting("minimise_on_copy", True)
+        self.window().copy_secret(value, label, notify=not minimise)
+        self.delegate.done = (e["uuid"], field)
+        self.table.viewport().update()
+        QTimer.singleShot(1500, lambda done=self.delegate.done: self._clear_done(done))
+        if minimise:
+            self.window().showMinimized()
 
     def _minimise_after_release(self, tries=50):
         """Minimises once the double-click's mouse button is back up (or after a second at most).
