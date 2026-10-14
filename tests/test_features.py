@@ -21,6 +21,7 @@ store.backup_dir = lambda: s / "feat_backups"
 from PySide6.QtCore import QSettings, QProcess
 (s / "features.ini").unlink(missing_ok=True)
 vault.settings = QSettings(str(s / "features.ini"), QSettings.IniFormat)  # never the real settings
+vault.settings.setValue("details_layout", "below")  # adding and editing in the pop-up (beside: in the pane)
 QProcess.startDetached = staticmethod(lambda *a, **k: (_ for _ in ()).throw(RuntimeError("no processes from tests")))
 saved_settings = {k: vault.settings.value(k) for k in ("icons_auto", "icons_duckduckgo")}
 
@@ -114,6 +115,7 @@ gh = entry("GitHub")
 expected = pyotp.TOTP(secret).now()
 print(ok(gh["totp"] and totp.code(gh["totp"])[0] == expected), "2FA saved; code", totp.code(gh["totp"])[0], "==", expected)
 v.refresh(select_uuid=gh["uuid"])
+v.notes.tabs.setCurrentItem("details")  # (below the list, the 2FA code is on the Details tab)
 QTest.qWait(1200)
 print(ok(v.notes.totp_box.isVisible() and v.notes.totp_code.text().replace(" ", "") == pyotp.TOTP(secret).now()),
       "notes panel shows live code:", v.notes.totp_code.text(), v.notes.totp_left.text())

@@ -50,7 +50,7 @@ from qfluentwidgets import (
     SegmentedWidget, InfoBar, InfoBarIcon, InfoBarPosition, MessageBox, MessageBoxBase, TreeWidget,
     TableView, RoundMenu, Action, qconfig, getFont, SmoothMode, ComboBox, setCustomStyleSheet,
     setThemeColor, themeColor, ProgressRing, ListWidget, CardWidget, TableWidget, ScrollArea, setFontFamilies,
-    CheckableMenu, FluentIconBase, getIconColor, HyperlinkButton, DotInfoBadge, InfoLevel,
+    CheckableMenu, FluentIconBase, getIconColor, HyperlinkButton,
 )
 from qfluentwidgets.components.widgets.table_view import TableItemDelegate
 from qfluentwidgets.components.widgets.tree_view import TreeItemDelegate
@@ -1296,7 +1296,10 @@ class GripSplitter(QSplitter):
         for w in widgets:
             self.addWidget(w)
         self.set_layout(orientation, key, default_sizes)
-        self.splitterMoved.connect(lambda *_: settings.setValue(self.key, self.saveState()))
+        self.splitterMoved.connect(self.save_position)
+
+    def save_position(self, *_):
+        settings.setValue(self.key, self.saveState())
 
     def set_layout(self, orientation, key, default_sizes):
         """Side by side or stacked, with the position saved under `key` (one per orientation: a saved
@@ -1669,10 +1672,6 @@ class NotesPanel(QWidget):
             self.tabs.addItem(key, text)
         bar.addWidget(self.tabs, 0, Qt.AlignVCenter)
         bar.addStretch(1)
-        # Password health found a problem: a dot on the Details tab (the advice is at the top of it)
-        self.tab_dot = DotInfoBadge(self.tabs.items["details"], InfoLevel.ERROR)
-        self.tab_dot.setFixedSize(6, 6)
-        self.tab_dot.hide()
         self.details_page = QWidget(objectName="detailsPage")
         self.details_page.setStyleSheet("QWidget#detailsPage { background: transparent; }")
         self.details_page_layout = QVBoxLayout(self.details_page)
@@ -1841,13 +1840,6 @@ class NotesPanel(QWidget):
         self.advice_btn.setVisible(self.window().vault._editable())
         style = "bad" if {"weak", "expired"} & set(shown) else "warn"  # coloured text, nothing heavier
         self.advice_text.setTextColor(QColor(CHIP_COLORS[style][0][1]), QColor(CHIP_COLORS[style][1][1]))
-        self.tab_dot.setLevel(InfoLevel.ERROR if style == "bad" else InfoLevel.WARNING)
-
-    def _show_tab_dot(self):
-        """The Details tab's dot: shown while there's health advice (on that tab)."""
-        tab = self.tabs.items["details"]
-        self.tab_dot.move(tab.width() - 12, 7)
-        self.tab_dot.setVisible(self.below and self.entry is not None and not self.advice.isHidden())
 
     @staticmethod
     def _ago(when):
@@ -2062,7 +2054,6 @@ class NotesPanel(QWidget):
             self.notes.clear()
             self._loading_notes = False
             self.advice.hide()
-            self.tab_dot.hide()
             self.notes_mask.hide()
             return
         self.title.setText(e["title"])
@@ -2133,7 +2124,6 @@ class NotesPanel(QWidget):
         e = self.entry
         problems = self.window().health.problems(e["uuid"]) if e else None
         self._show_advice(e, problems)
-        self._show_tab_dot()
         if not e or not e["password"] or problems is None:
             self.chip.hide()
             return
@@ -2478,6 +2468,10 @@ class VaultView(QWidget):
         website…). Remembered. False if an entry being edited couldn't be saved: the layout stays."""
         if below != self.below and not self.leave_editor():
             return False
+        if below != self.below:  # the panels as they are now (dragged, or changed with the window), for coming back
+            self.splitter.save_position()
+            if not self.below:
+                self.notes.details_splitter.save_position()
         self.below = below
         if save:
             settings.setValue("details_layout", "below" if below else "right")

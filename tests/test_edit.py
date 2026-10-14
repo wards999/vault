@@ -17,6 +17,7 @@ import vault, store
 from PySide6.QtCore import QSettings
 vault.settings = QSettings(str(s / 'edit_test.ini'), QSettings.IniFormat)
 vault.settings.clear()
+vault.settings.setValue("details_layout", "below")  # adding and editing in the pop-up (beside: in the pane)
 vault.setTheme(vault.Theme.LIGHT)
 store.backup_dir = lambda: s / "gui_backups"  # keep test backups out of the project
 shutil.rmtree(s / "gui_backups", ignore_errors=True)

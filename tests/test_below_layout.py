@@ -197,6 +197,30 @@ QTest.qWait(200)
 ok("below again: its divider position", abs(v.splitter.sizes()[0] - below_sizes[0]) <= 2,
    (below_sizes, v.splitter.sizes()))
 
+# Sizes changed without dragging (the window resized) are kept too: they're saved on switching
+w.resize(1300, 800)
+QTest.qWait(300)
+below_sizes = v.splitter.sizes()
+v.layout_btn.click()
+QTest.qWait(200)
+w.resize(1500, 800)
+QTest.qWait(300)
+beside_sizes, notes_sizes = v.splitter.sizes(), v.notes.details_splitter.sizes()
+v.layout_btn.click()
+QTest.qWait(200)
+w.resize(1300, 800)
+QTest.qWait(300)
+ok("below after a window resize: as it was", v.splitter.sizes() == below_sizes, (below_sizes, v.splitter.sizes()))
+v.layout_btn.click()
+QTest.qWait(200)
+w.resize(1500, 800)
+QTest.qWait(300)
+ok("beside after a window resize: as it was, notes and activity too",
+   v.splitter.sizes() == beside_sizes and v.notes.details_splitter.sizes() == notes_sizes,
+   (beside_sizes, v.splitter.sizes(), notes_sizes, v.notes.details_splitter.sizes()))
+v.layout_btn.click()  # (below again, as before)
+QTest.qWait(200)
+
 # Editing beside the list, then switching: asks about unsaved changes first (here: no title, can't save)
 v.layout_btn.click()
 QTest.qWait(200)
