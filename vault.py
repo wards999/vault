@@ -5285,6 +5285,7 @@ class SettingsView(ScrollArea):
         super().__init__(parent)
         self.setObjectName("view-settings")
         self.setWidgetResizable(True)
+        self.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)  # it fits the width (long texts wrap)
         self.enableTransparentBackground()
         self.scrollDelagate.verticalSmoothScroll.setSmoothMode(SmoothMode.NO_SMOOTH)
         page = QWidget(objectName="settingsPage")
@@ -5455,12 +5456,18 @@ class SettingsView(ScrollArea):
         card = SimpleCardWidget()
         layout = QHBoxLayout(card)
         layout.setContentsMargins(20, 14, 20, 14)
+        layout.setSpacing(16)
         text = QVBoxLayout()
         text.setSpacing(2)
         text.addWidget(BodyLabel(title))
-        text.addWidget(caption(desc))
+        # Wrapped to the window's width (one long line made the page wider than the window, and the
+        # switches and choices went off its right edge)
+        detail = caption(desc)
+        detail.setWordWrap(True)
+        detail.setMinimumWidth(1)
+        text.addWidget(detail)
         layout.addLayout(text, 1)
-        layout.addWidget(control)
+        layout.addWidget(control, 0, Qt.AlignVCenter)
         return card
 
 
