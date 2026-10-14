@@ -50,7 +50,7 @@ from qfluentwidgets import (
     SegmentedWidget, InfoBar, InfoBarIcon, InfoBarPosition, MessageBox, MessageBoxBase, TreeWidget,
     TableView, RoundMenu, Action, qconfig, getFont, SmoothMode, ComboBox, setCustomStyleSheet,
     setThemeColor, themeColor, ProgressRing, ListWidget, CardWidget, TableWidget, ScrollArea, setFontFamilies,
-    CheckableMenu, FluentIconBase, getIconColor, HyperlinkButton,
+    CheckableMenu, FluentIconBase, getIconColor, HyperlinkButton, DotInfoBadge, InfoLevel,
 )
 from qfluentwidgets.components.widgets.table_view import TableItemDelegate
 from qfluentwidgets.components.widgets.tree_view import TreeItemDelegate
@@ -625,19 +625,27 @@ EXPIRED_COLOR = QColor("#a0a0a0")
 
 
 class EntryDelegate(TableItemDelegate):
-    """Draws each entry as a card: its icon, the title with the username underneath, and a star
-    (favourites) and paperclip (attached files) on the right."""
+    """Draws each entry as a card: its icon and title, with copy buttons, a star (favourites) and a
+    paperclip (attached files) on the right. With the details below the list (`columns`), the card
+    runs across the columns (username, password, website, folder, dates) and the buttons have the
+    last one to themselves."""
 
     def __init__(self, view, model):
         super().__init__(view)
+        self.view = view
         self.model = model
-        self.colorize = setting("color_passwords", True)  # for the details pane's password
+        self.colorize = setting("color_passwords", True)  # for the passwords shown in the list and details
         self.stripes = setting("list_stripes", True)  # Settings → Striped list
         self.font = getFont(13)  # the same as the folders' (and set_list_text_size scales both)
         self.small = getFont(13)
+        self.mono = QFont(MONO_FAMILY)  # passwords, in the columns
+        self.mono.setStyleHint(QFont.TypeWriter)
+        self.mono.setPixelSize(13)
         self.italic = QFont(self.font)  # old copies in a Backup folder
         self.italic.setItalic(True)
         self.tile = 34
+        self.columns = False  # the details are below the list: the card spans the columns shown
+        self._today, self._today_until = "", 0.0  # see short_date
         self._update_text_color()
         qconfig.themeChanged.connect(self._update_text_color)
 
@@ -645,6 +653,31 @@ class EntryDelegate(TableItemDelegate):
         dark = isDarkTheme()
         self.text_color = QColor(Qt.white if dark else Qt.black)
         self.muted = QColor("#a3a9af" if dark else "#5c656d")
+        self.char_colors = {kind: QColor(PASSWORD_COLORS[kind][dark]) if kind in PASSWORD_COLORS
+                            else QColor(PASSWORD_PLAIN[dark]) for kind in ("upper", "lower", "digit", "symbol")}
+
+    def row_rect(self, cell):
+        """The whole card, from the rect of one of its cells."""
+        if not self.columns:
+            return cell
+        header = self.view.horizontalHeader()
+        left = header.sectionViewportPosition(EntryModel.TITLE)
+        right = header.sectionViewportPosition(EntryModel.ACTIONS) + header.sectionSize(EntryModel.ACTIONS)
+        return QRect(left, cell.y(), right - left, cell.height())
+
+    def short_date(self, stamp):
+        """A date for the columns: "Oct 14, 2026", or just the time ("14:32") for today. `stamp` is
+        store's "%b %d, %Y %H:%M"."""
+        if not stamp:
+            return ""
+        now = time.time()
+        if now >= self._today_until:  # worked out once a day, not for every cell painted
+            today = datetime.now()
+            self._today = today.strftime("%b %d, %Y")
+            midnight = today.replace(hour=0, minute=0, second=0, microsecond=0)
+            self._today_until = midnight.timestamp() + 86400
+        day = stamp[:-6]
+        return stamp[-5:] if day == self._today else day
 
     ATTACH = AppIcon("attach")
     # Buttons shown on the card under the mouse: (field, icon, tooltip)
@@ -652,19 +685,28 @@ class EntryDelegate(TableItemDelegate):
                ("password", AppIcon("key"), "Copy password (Ctrl+C)"),
                ("totp", icon("STOP_WATCH", "HISTORY"), "Copy 2FA code (Ctrl+T)")]
     BUTTON_WIDTH = 48  # each one is the full height of the card: easy to hit
+    COLUMN_BUTTON_WIDTH = 38  # in the columns, where they have a column of their own: narrower
     STAR_WIDTH = 36  # the star, last on every card (so it lines up down the list), stars or unstars it
 
     hover_pos = None  # the mouse, over the list (for the button under it)
-    done = None  # (entry uuid, field) just copied: its button shows a tick for a moment
+    done = None  # (entry uuid, field) just copied: its button (or cell) shows a tick for a moment
+
+    def button_width(self):
+        return self.COLUMN_BUTTON_WIDTH if self.columns else self.BUTTON_WIDTH
+
+    def actions_width(self):
+        """The buttons' column: room for all three copy buttons and the star."""
+        return 8 + 3 * (self.button_width() + 2) + self.STAR_WIDTH + 8
 
     def actions(self, e, rect):
-        """[(field, icon, tooltip, QRect)] of the hover buttons for this card, right-aligned: the copy
-        buttons for the fields it has, then the star ("favourite", drawn rather than an icon)."""
+        """[(field, icon, tooltip, QRect)] of the hover buttons for the card in `rect` (see row_rect),
+        right-aligned: the copy buttons for the fields it has, then the star ("favourite", drawn rather
+        than an icon)."""
         shown = [a for a in self.ACTIONS if (e["totp"] if a[0] == "totp" else e[a[0]])]
         if e["favourite"] or self.model.draggable:  # (a read-only database: only a favourite's star)
             shown.append(("favourite", None, "Remove from Favourites" if e["favourite"] else "Add to Favourites"))
         r = rect.adjusted(6, 2, -8, -2)
-        widths = [self.STAR_WIDTH if field == "favourite" else self.BUTTON_WIDTH for field, _i, _t in shown]
+        widths = [self.STAR_WIDTH if field == "favourite" else self.button_width() for field, _i, _t in shown]
         x = r.right() + 1 - sum(w + 2 for w in widths) + 2
         out = []
         for (field, ico, tip), w in zip(shown, widths):
@@ -679,9 +721,13 @@ class EntryDelegate(TableItemDelegate):
 
     def paint(self, painter, option, index):
         e = self.model.entries[index.row()]
-        r = option.rect.adjusted(6, 2, -8, -2)
+        col, cell = index.column(), option.rect
+        row = self.row_rect(cell)
+        r = row.adjusted(6, 2, -8, -2)
         dark = isDarkTheme()
         painter.save()
+        if self.columns:  # each cell draws its own part of the card
+            painter.setClipRect(cell)
         painter.setRenderHint(QPainter.Antialiasing)
         painter.setPen(Qt.NoPen)
         selected = index.row() in self.selectedRows
@@ -707,14 +753,22 @@ class EntryDelegate(TableItemDelegate):
             painter.setBrush(QColor(themeColor()))
             painter.drawRoundedRect(QRectF(r.x() + 1, r.y() + r.height() * 0.2, 4, r.height() * 0.6), 2, 2)
 
-        tile = QRect(r.x() + 12, r.center().y() - self.tile // 2 + 1, self.tile, self.tile)
-        draw_entry_tile(painter, tile, e, self.model.icons)
-        x, right = tile.right() + 13, r.right() - 10
-        # The copy buttons and star: always there, very pale, and full strength on the card under the
-        # mouse (a favourite's star is always gold)
-        c = 255 if dark else 0
         hovered = index.row() == self.hoverRow
-        for field, ico, _tip, rect in self.actions(e, option.rect):
+        right = (cell.right() if self.columns else r.right()) - 10
+        if col == (EntryModel.ACTIONS if self.columns else EntryModel.TITLE):
+            right = min(right, self._paint_buttons(painter, e, row, hovered, dark))
+        if col == EntryModel.TITLE:
+            self._paint_title(painter, e, r, right)
+        elif col != EntryModel.ACTIONS:
+            self._paint_value(painter, e, col, cell, hovered, dark)
+        painter.restore()
+
+    def _paint_buttons(self, painter, e, row, hovered, dark):
+        """The copy buttons and star: always there, very pale, and full strength on the card under the
+        mouse (a favourite's star is always gold). Returns how far right the title can go."""
+        c = 255 if dark else 0
+        right = row.right()
+        for field, ico, _tip, rect in self.actions(e, row):
             if hovered and self.hover_pos is not None and rect.contains(self.hover_pos):
                 painter.setBrush(QColor(c, c, c, 22 if dark else 16))
                 painter.drawRoundedRect(rect, 6, 6)
@@ -738,6 +792,13 @@ class EntryDelegate(TableItemDelegate):
                 (FIF.ACCEPT if done else ico).render(painter, spot)
             painter.setOpacity(1)
             right = min(right, rect.x() - 6)
+        return right
+
+    def _paint_title(self, painter, e, r, right):
+        """The icon, the title, and a paperclip at its right if the entry has attached files."""
+        tile = QRect(r.x() + 12, r.center().y() - self.tile // 2 + 1, self.tile, self.tile)
+        draw_entry_tile(painter, tile, e, self.model.icons)
+        x = tile.right() + 13
         if e["attachments"]:
             s = 14
             painter.setOpacity(0.6)
@@ -753,7 +814,55 @@ class EntryDelegate(TableItemDelegate):
         painter.setPen(title_color)
         painter.drawText(QRect(x, y, width, fm1.height()), Qt.AlignLeft | Qt.AlignVCenter,
                          fm1.elidedText(e["title"], Qt.ElideRight, width))
-        painter.restore()
+
+    def _paint_value(self, painter, e, col, cell, hovered, dark):
+        """One of the columns: the username and password (which copy with a double-click: lit up under
+        the mouse), the website, folder and dates (quieter)."""
+        M = EntryModel
+        if col == M.WEBSITE:
+            value = e.get("_site")
+            if value is None:  # without "https://" and "www.": the part that tells sites apart
+                value = e["_site"] = re.sub(r"^[a-z][a-z0-9+.-]*://(www\.)?", "", e["url"], flags=re.I).rstrip("/")
+        elif col in (M.MODIFIED, M.CREATED):
+            value = self.short_date(e["modified" if col == M.MODIFIED else "created"])
+        else:
+            value = {M.USERNAME: e["username"], M.PASSWORD: e["password"], M.FOLDER: e["folder"]}.get(col, "")
+        if not value:
+            return
+        box = cell.adjusted(10, 0, -8, 0)
+        field = "username" if col == M.USERNAME else "password" if col == M.PASSWORD else None
+        if field:
+            if hovered and self.hover_pos is not None and cell.contains(self.hover_pos):
+                c = 255 if dark else 0
+                painter.setBrush(QColor(c, c, c, 22 if dark else 16))
+                painter.drawRoundedRect(cell.adjusted(2, 6, -2, -6), 6, 6)
+            if self.done == (e["uuid"], field):  # just copied (double-clicked): a tick for a moment
+                s = 14
+                FIF.ACCEPT.render(painter, QRect(box.right() - s, cell.center().y() - s // 2, s, s))
+                box.setRight(box.right() - s - 6)
+        dim = e["expired"] or self.model.is_dimmed_backup(e)
+        color = EXPIRED_COLOR if dim else self.text_color if field else self.muted
+        if col == M.PASSWORD:
+            painter.setFont(self.mono)
+            fm = QFontMetrics(self.mono)
+            if not self.model.is_revealed(e):
+                value = MASK
+            text = fm.elidedText(value, Qt.ElideRight, box.width())
+            if value is MASK or dim or not self.colorize:
+                painter.setPen(color)
+                painter.drawText(box, Qt.AlignLeft | Qt.AlignVCenter, text)
+                return
+            x = box.x()  # colour-coded, like the details (monospaced: every character as wide)
+            for ch in text:
+                w = fm.horizontalAdvance(ch)
+                painter.setPen(self.char_colors[char_kind(ch)])
+                painter.drawText(QRect(x, box.y(), w + 1, box.height()), Qt.AlignLeft | Qt.AlignVCenter, ch)
+                x += w
+            return
+        painter.setFont(self.small)
+        painter.setPen(color)
+        painter.drawText(box, Qt.AlignLeft | Qt.AlignVCenter,
+                         QFontMetrics(self.small).elidedText(value, Qt.ElideRight, box.width()))
 
 
 ENTRY_MIME = "application/x-vault-entries"
@@ -964,8 +1073,10 @@ class FolderTree(TreeWidget):
 
 
 class EntryModel(QAbstractTableModel):
-    COLUMNS = ["Title", "Username", "Password", "Website", "Folder", "Modified", "Created"]
-    TITLE, USERNAME, PASSWORD, WEBSITE, FOLDER, MODIFIED, CREATED = range(7)
+    # The last column holds the copy buttons and star when the details are below the list (the
+    # columns show then); beside it, only the first column shows and the card draws the rest.
+    COLUMNS = ["Name", "Username", "Password", "Website", "Folder", "Modified", "Created", ""]
+    TITLE, USERNAME, PASSWORD, WEBSITE, FOLDER, MODIFIED, CREATED, ACTIONS = range(8)
     # Sorting is done here in one Python sort; a QSortFilterProxyModel would call data()
     # tens of thousands of times per sort, which made searching and sorting laggy.
     SORT_KEYS = {
@@ -1066,7 +1177,7 @@ class EntryModel(QAbstractTableModel):
             cells = e.get("_cells")
             if cells is None:
                 cells = e["_cells"] = (e["title"], e["username"], "", e["url"], e["folder"], e["modified"],
-                                       e["created"])
+                                       e["created"], "")
             return cells[col]
         if role == R_USER:
             return e
@@ -1081,10 +1192,14 @@ class EntryModel(QAbstractTableModel):
                 return "This entry has expired"
             if col == 0 and self.is_dimmed_backup(e):
                 return f"An old copy, kept in the Backup folder ({e['folder']})"
-            if col in (1, 2):
+            if col in (1, 2) and e["username" if col == 1 else "password"]:
                 return "Double-click to copy and minimise" if setting("minimise_on_copy", True) else "Double-click to copy"
             if col == 3 and e["url"]:
                 return f"{e['url']}\nDouble-click to open"
+            if col == 4:
+                return e["folder"]
+            if col in (5, 6):
+                return e["modified" if col == 5 else "created"] or None
         return None
 
 
@@ -1180,14 +1295,27 @@ class GripSplitter(QSplitter):
         self.setHandleWidth(16)
         for w in widgets:
             self.addWidget(w)
-        grow = len(widgets) - 1 if orientation == Qt.Horizontal else 0
-        for i in range(len(widgets)):
+        self.set_layout(orientation, key, default_sizes)
+        self.splitterMoved.connect(lambda *_: settings.setValue(self.key, self.saveState()))
+
+    def set_layout(self, orientation, key, default_sizes):
+        """Side by side or stacked, with the position saved under `key` (one per orientation: a saved
+        position includes it)."""
+        self.key = key
+        self.setOrientation(orientation)
+        grow = self.count() - 1 if orientation == Qt.Horizontal else 0
+        for i in range(self.count()):
             self.setStretchFactor(i, 1 if i == grow else 0)
+        self._restore(default_sizes)
+        # Again once the switch has been laid out: sizes set while the orientation and the panes'
+        # contents were still changing were lost
+        QTimer.singleShot(0, self, lambda: self.key == key and self._restore(default_sizes))
+
+    def _restore(self, default_sizes):
         self.setSizes(default_sizes)
-        state = settings.value(key)
+        state = settings.value(self.key)
         if state is not None:
             self.restoreState(state)
-        self.splitterMoved.connect(lambda *_: settings.setValue(key, self.saveState()))
 
     def createHandle(self):
         return GripHandle(self.orientation(), self)
@@ -1333,12 +1461,15 @@ class NotesPanel(QWidget):
         self.setMinimumWidth(340)
         self.entry = None
         self.revealed = False
-        root = QVBoxLayout(self)
+        root = self.outer = QVBoxLayout(self)
         root.setContentsMargins(30, 20, 26, 14)
         root.setSpacing(0)
         vault = lambda: self.window().vault
+        self.below = False  # under the list: a strip with tabs (see set_below)
 
-        head = QHBoxLayout()
+        self.head_box = QWidget()  # (not shown below the list: the list shows which entry it is)
+        head = self.head = QHBoxLayout(self.head_box)
+        head.setContentsMargins(0, 0, 0, 18)
         head.setSpacing(16)
         self.icon = QLabel()
         self.icon.setFixedSize(56, 56)
@@ -1372,8 +1503,7 @@ class NotesPanel(QWidget):
         self.edit_btn.setToolTip(shortcut_text("Edit (Enter)"))
         self.edit_btn.clicked.connect(lambda: vault().edit_entry())
         head.addWidget(self.edit_btn, 0, Qt.AlignVCenter)
-        root.addLayout(head)
-        root.addSpacing(18)
+        root.addWidget(self.head_box)
 
         # The fields, on a card
         self.card = SimpleCardWidget()
@@ -1389,7 +1519,7 @@ class NotesPanel(QWidget):
         self.pw_row.line.addWidget(self.chip, 0, Qt.AlignVCenter)
         self.pw_row.line.addSpacing(6)
         self.eye = self.pw_row.add_button(TransparentToolButton(FIF.VIEW))
-        self.eye.clicked.connect(lambda: self.set_revealed(not self.revealed))
+        self.eye.clicked.connect(lambda: vault().toggle_password())  # (the list's column follows it)
         self.pw_row.add_button(copy_button("Copy password (Ctrl+C)", lambda: vault().copy_password()))
         self.url_value = BodyLabel("")
         self.url_value.linkActivated.connect(lambda _link: vault().open_url())
@@ -1444,7 +1574,7 @@ class NotesPanel(QWidget):
 
         # Below the fields: the notes, then a divider (drag it; it's remembered), then the activity
         details = root
-        notes_box, activity_box = QWidget(), QWidget()
+        notes_box, activity_box = self.notes_box, self.activity_box = QWidget(), QWidget()
         for box in (notes_box, activity_box):
             box.setMinimumHeight(60)
         self.details_splitter = GripSplitter(Qt.Vertical, "details_splitter", [notes_box, activity_box], [420, 150])
@@ -1526,8 +1656,105 @@ class NotesPanel(QWidget):
         self.related.setSpacing(2)
         root.addLayout(self.related)
         root.addStretch(1)
+        self.more_layout = root
+
+        # Under the list (set_below), a strip: tabs for the notes, the fields and the activity, with
+        # History and Edit beside them. The notes, card and activity above move onto the tabs.
+        self.strip_bar = QWidget()
+        bar = QHBoxLayout(self.strip_bar)
+        bar.setContentsMargins(0, 0, 0, 0)
+        bar.setSpacing(8)
+        self.tabs = SegmentedWidget()
+        for key, text in (("notes", "Notes"), ("details", "Details"), ("activity", "Activity")):
+            self.tabs.addItem(key, text)
+        bar.addWidget(self.tabs, 0, Qt.AlignVCenter)
+        bar.addStretch(1)
+        # Password health found a problem: a dot on the Details tab (the advice is at the top of it)
+        self.tab_dot = DotInfoBadge(self.tabs.items["details"], InfoLevel.ERROR)
+        self.tab_dot.setFixedSize(6, 6)
+        self.tab_dot.hide()
+        self.details_page = QWidget(objectName="detailsPage")
+        self.details_page.setStyleSheet("QWidget#detailsPage { background: transparent; }")
+        self.details_page_layout = QVBoxLayout(self.details_page)
+        self.details_page_layout.setContentsMargins(0, 0, 14, 0)  # room for the scroll bar
+        self.details_page_layout.setSpacing(8)
+        self.details_page_layout.addStretch(1)
+        self.details_scroll = ScrollArea()
+        self.details_scroll.setWidget(self.details_page)
+        self.details_scroll.setWidgetResizable(True)
+        self.details_scroll.enableTransparentBackground()
+        self.details_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.details_scroll.setFrameShape(QFrame.NoFrame)
+        self.details_scroll.scrollDelagate.verticalSmoothScroll.setSmoothMode(SmoothMode.NO_SMOOTH)
+        self.empty = caption("Pick something from the list to see its notes.")
+        self.empty.setAlignment(Qt.AlignCenter)
+        self.pages = QStackedWidget()
+        self.pages.addWidget(self.details_scroll)
+        self.pages.addWidget(self.empty)
+        tab = setting("details_tab", "notes")
+        self.tabs.setCurrentItem(tab if tab in self.tabs.items else "notes")
+        self.tabs.currentItemChanged.connect(self._tab_chosen)
+        self.strip_bar.hide()
+        self.pages.hide()
+
         qconfig.themeChanged.connect(lambda: self.set_entry(self.entry))
         self.set_entry(None)
+
+    # ---- beside the list, or below it
+
+    def set_below(self, below):
+        """Beside the list: the entry's name, its fields, then the notes and activity (with a divider
+        between them). Below it: a short strip with the notes, fields and activity on tabs."""
+        if below == self.below:
+            return
+        self.below = below
+        root = self.outer
+        while root.count():  # (the widgets stay; only the layout's hold on them goes)
+            root.takeAt(0)
+        if below:
+            root.setContentsMargins(16, 8, 16, 10)
+            for button in (self.history_btn, self.edit_btn):
+                self.strip_bar.layout().addWidget(button, 0, Qt.AlignVCenter)
+            self.details_page_layout.insertWidget(0, self.advice)
+            self.details_page_layout.insertWidget(1, self.card)
+            self.pages.insertWidget(0, self.notes_box)
+            self.pages.insertWidget(2, self.activity_box)
+            root.addWidget(self.strip_bar)
+            root.addSpacing(8)
+            root.addWidget(self.pages, 1)
+        else:
+            root.setContentsMargins(30, 20, 26, 14)
+            for button in (self.history_btn, self.edit_btn):
+                self.head.addWidget(button, 0, Qt.AlignVCenter)
+            self.more_layout.insertWidget(1, self.advice)
+            self.pages.removeWidget(self.notes_box)
+            self.pages.removeWidget(self.activity_box)
+            self.details_splitter.insertWidget(0, self.notes_box)
+            self.details_splitter.insertWidget(1, self.activity_box)
+            for box in (self.notes_box, self.activity_box):
+                box.show()  # (the tabs left all but one hidden)
+            self.details_splitter.set_layout(Qt.Vertical, "details_splitter", [420, 150])
+            root.addWidget(self.head_box)
+            root.addWidget(self.card)
+            root.addSpacing(16)
+            root.addWidget(self.details_splitter, 1)
+        self.head_box.setVisible(not below)
+        self.strip_bar.setVisible(below)
+        self.pages.setVisible(below)
+        self.set_entry(self.entry)
+
+    def _tab_chosen(self, key):
+        settings.setValue("details_tab", key)  # the same tab for the next entry, and next time
+        self._show_tab()
+
+    def _show_tab(self):
+        if not self.below:
+            return
+        if self.entry is None:
+            self.pages.setCurrentWidget(self.empty)
+            return
+        self.pages.setCurrentWidget({"notes": self.notes_box, "details": self.details_scroll,
+                                     "activity": self.activity_box}[self.tabs.currentRouteKey()])
 
 
     # ---- the folder, chosen in place
@@ -1614,6 +1841,13 @@ class NotesPanel(QWidget):
         self.advice_btn.setVisible(self.window().vault._editable())
         style = "bad" if {"weak", "expired"} & set(shown) else "warn"  # coloured text, nothing heavier
         self.advice_text.setTextColor(QColor(CHIP_COLORS[style][0][1]), QColor(CHIP_COLORS[style][1][1]))
+        self.tab_dot.setLevel(InfoLevel.ERROR if style == "bad" else InfoLevel.WARNING)
+
+    def _show_tab_dot(self):
+        """The Details tab's dot: shown while there's health advice (on that tab)."""
+        tab = self.tabs.items["details"]
+        self.tab_dot.move(tab.width() - 12, 7)
+        self.tab_dot.setVisible(self.below and self.entry is not None and not self.advice.isHidden())
 
     @staticmethod
     def _ago(when):
@@ -1637,8 +1871,8 @@ class NotesPanel(QWidget):
             item = self.related.takeAt(0)
             if item.widget():
                 item.widget().deleteLater()
-        for part in (self.activity_label, self.more_scroll):
-            part.setVisible(e is not None)
+        self.activity_label.setVisible(e is not None and not self.below)  # (below the list: its tab says so)
+        self.more_scroll.setVisible(e is not None)
         self.related_label.hide()
         if e is None:
             return
@@ -1799,8 +2033,9 @@ class NotesPanel(QWidget):
         same = e is not None and self.entry is not None and e["uuid"] == self.entry["uuid"]
         if not same and self.notes_timer.isActive():
             self.save_notes()  # notes typed for the previous entry
-        if not same:  # another entry: hidden again, unless Show passwords is on (a reload keeps it)
-            self.revealed = self.window().vault.model.show_passwords if e else False
+        if not same:  # another entry: hidden again, unless Show passwords is on (a reload keeps it) or
+            # it's shown in the list's password column
+            self.revealed = self.window().vault.model.is_revealed(e) if e else False
             if self._notes_shown:
                 self._notes_shown = False
                 QApplication.instance().removeEventFilter(self)
@@ -1812,10 +2047,13 @@ class NotesPanel(QWidget):
             self.totp_timer.start()
         else:
             self.totp_timer.stop()
-        for part in (self.icon, self.fav_btn, self.history_btn, self.edit_btn, self.card, self.notes_label, self.notes,
-                     self.details_splitter):
+        for part in (self.icon, self.fav_btn, self.history_btn, self.edit_btn, self.card, self.notes):
             part.setVisible(e is not None)
+        for part in (self.notes_label, self.details_splitter):  # (below the list: the tabs instead)
+            part.setVisible(e is not None and not self.below)
+        self.tabs.setVisible(e is not None)
         self._show_activity(e)
+        self._show_tab()
         if e is None:
             self.title.setText("No entry selected")
             self.path.setText("")
@@ -1824,6 +2062,7 @@ class NotesPanel(QWidget):
             self.notes.clear()
             self._loading_notes = False
             self.advice.hide()
+            self.tab_dot.hide()
             self.notes_mask.hide()
             return
         self.title.setText(e["title"])
@@ -1894,6 +2133,7 @@ class NotesPanel(QWidget):
         e = self.entry
         problems = self.window().health.problems(e["uuid"]) if e else None
         self._show_advice(e, problems)
+        self._show_tab_dot()
         if not e or not e["password"] or problems is None:
             self.chip.hide()
             return
@@ -1941,6 +2181,7 @@ class VaultView(QWidget):
         self.setObjectName("view-vault")
         self.db = None
         self.folder = None
+        self.below = False  # the details below the list rather than beside it (set_details_below)
 
         root = QHBoxLayout(self)
         root.setContentsMargins(0, 0, 0, 0)
@@ -2003,6 +2244,10 @@ class VaultView(QWidget):
         self.sort_btn.setToolTip("Sort")
         self.sort_btn.clicked.connect(self._sort_menu)
         head.addWidget(self.sort_btn, 0, Qt.AlignVCenter)
+        # The details beside the list or below it (remembered); its icon shows the other layout
+        self.layout_btn = TransparentToolButton(AppIcon("layout_below"))
+        self.layout_btn.clicked.connect(lambda: self.set_details_below(not self.below))
+        head.addWidget(self.layout_btn, 0, Qt.AlignVCenter)
         right.addLayout(head)
         # Show passwords and Check for changes (shown in the title bar)
         self.reveal = TransparentToggleToolButton(FIF.VIEW)
@@ -2033,13 +2278,31 @@ class VaultView(QWidget):
         for bar in (self.table.verticalScrollBar(), self.table.horizontalScrollBar()):
             bar.rangeChanged.connect(lambda *_: self.gutter_timer.start())
         self.set_density(setting("row_density", "Comfortable"))
-        # One card per entry: only the first column shows (the card draws the rest), across the list
+        # One card per entry: beside the details, only the first column shows (the card draws the rest),
+        # across the list; above them, the columns too (see set_details_below), and their headings sort.
         header = self.table.horizontalHeader()
         header.hide()
         for col in range(1, len(EntryModel.COLUMNS)):
             header.setSectionHidden(col, True)
+        header.setSectionResizeMode(QHeaderView.Interactive)
         header.setSectionResizeMode(EntryModel.TITLE, QHeaderView.Stretch)
-        self.table.setSortingEnabled(True)
+        header.setSectionResizeMode(EntryModel.ACTIONS, QHeaderView.Fixed)
+        header.setMinimumSectionSize(40)
+        header.setDefaultAlignment(Qt.AlignLeft | Qt.AlignVCenter)
+        header.setHighlightSections(False)
+        widths = str(setting("list_column_widths", "")).split(",")  # dragged wider or narrower: remembered
+        self._column_widths = {col: int(widths[col]) if col < len(widths) and widths[col].isdigit() else width
+                               for col, width in self.COLUMN_WIDTHS.items()}
+        for col, width in self._column_widths.items():
+            header.resizeSection(col, width)
+        header.sectionResized.connect(self._column_resized)
+        # Clicking a heading sorts by it (again: the other way round); the Sort menu does the same.
+        # Sorted here rather than by the table, so the Password and buttons columns can't be sorted.
+        header.setSectionsClickable(True)
+        header.setSortIndicatorShown(True)
+        header.sectionClicked.connect(self._heading_clicked)
+        header.setContextMenuPolicy(Qt.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._columns_menu)
         column, order = self._saved_sort()
         self.table.sortByColumn(column, order)
         self.table.selectionModel().currentRowChanged.connect(self._on_row)
@@ -2074,15 +2337,17 @@ class VaultView(QWidget):
         list_box = QWidget()
         list_box.setLayout(right)
         list_box.setMinimumWidth(260)
-        # The list and the details (or the entry being edited) side by side; drag the divider to make
-        # the list wider
+        # The list and the details (or the entry being edited) side by side, or the details below the
+        # list (set_details_below); drag the divider to give the list more room
         self.details = QStackedWidget()
         self.details.addWidget(self.notes)
         self.editor = None  # EntryEditPane while an entry is being edited or added
+        self._popup = None  # EntryEditor (a pop-up) instead, with the details below the list
         self._editor_anchor = None  # the entry selected when it opened (staying on it keeps it open)
         self.splitter = GripSplitter(Qt.Horizontal, "list_splitter", [list_box, self.details], [380, 900])
         self.splitter.setHandleWidth(9)
         root.addWidget(self.splitter)
+        self.set_details_below(setting("details_layout", "right") == "below", save=False)
         # The UI library pads each folder row by 20 px on the left; 12 still clears the expand arrows.
         row_qss = "QTreeView::item { padding-left: 12px; }"
         setCustomStyleSheet(self.tree, row_qss, row_qss)
@@ -2180,6 +2445,8 @@ class VaultView(QWidget):
         """Forget everything that came from the database (used when locking)."""
         if self.editor is not None:  # locked mid-edit: the form goes (unsaved changes with it)
             self._close_editor(self.editor)
+        if self._popup is not None:  # likewise the pop-up one (details below the list)
+            self._popup.reject()
         self.db = None
         self.tree.blockSignals(True)
         self.tree.clear()
@@ -2195,6 +2462,102 @@ class VaultView(QWidget):
         self.count.setText("")
         self.save_status.setText("")
         self.notes.set_entry(None)
+
+    # ---- the details beside the list, or below it (with columns in the list)
+
+    # The columns' starting widths (the name takes the rest)
+    COLUMN_WIDTHS = {EntryModel.USERNAME: 180, EntryModel.PASSWORD: 130, EntryModel.WEBSITE: 170,
+                     EntryModel.FOLDER: 150, EntryModel.MODIFIED: 100, EntryModel.CREATED: 100}
+    # When the list is too narrow for them all, they give way from the end of this list
+    COLUMN_PRIORITY = [EntryModel.USERNAME, EntryModel.PASSWORD, EntryModel.WEBSITE, EntryModel.MODIFIED,
+                       EntryModel.CREATED, EntryModel.FOLDER]
+    NAME_MIN_WIDTH = 220  # the name column keeps at least this much
+
+    def set_details_below(self, below, save=True):
+        """The details beside the list, or below it (the list then shows columns: username, password,
+        website…). Remembered. False if an entry being edited couldn't be saved: the layout stays."""
+        if below != self.below and not self.leave_editor():
+            return False
+        self.below = below
+        if save:
+            settings.setValue("details_layout", "below" if below else "right")
+        if below:  # each layout keeps its own divider position
+            self.splitter.set_layout(Qt.Vertical, "list_splitter_below", [520, 260])
+        else:
+            self.splitter.set_layout(Qt.Horizontal, "list_splitter", [380, 900])
+        self.notes.set_below(below)
+        self.delegate.columns = below
+        header = self.table.horizontalHeader()
+        header.setVisible(below)
+        header.resizeSection(EntryModel.ACTIONS, self.delegate.actions_width())
+        self._fit_columns()
+        self.layout_btn.setIcon(AppIcon("layout_right" if below else "layout_below"))
+        self.layout_btn.setToolTip("Show the details beside the list" if below else "Show the details below the list")
+        self.table.viewport().update()
+        return True
+
+    def _chosen_columns(self):
+        """The columns ticked in the headings' right-click menu (all of them to start with)."""
+        saved = setting("list_columns", "all")
+        if saved == "all":
+            return set(self.COLUMN_WIDTHS)
+        return {int(c) for c in str(saved).split(",") if c.isdigit()} & set(self.COLUMN_WIDTHS)
+
+    def _fit_columns(self):
+        """Shows the chosen columns that fit beside the name (the rest give way in COLUMN_PRIORITY's
+        order); the folder only where the list mixes folders: All entries, Favourites, Notes, searches."""
+        header = self.table.horizontalHeader()
+        shown = set()
+        if self.below:
+            chosen = self._chosen_columns()
+            mixed = bool(self.search.text().strip()) or self.folder in (None, *VIEWS)
+            room = self.table.viewport().width() - self.NAME_MIN_WIDTH - self.delegate.actions_width()
+            for col in self.COLUMN_PRIORITY:
+                if col not in chosen or (col == EntryModel.FOLDER and not mixed):
+                    continue
+                room -= self._column_widths[col]
+                if room < 0:
+                    break
+                shown.add(col)
+            shown.add(EntryModel.ACTIONS)
+        for col in range(1, len(EntryModel.COLUMNS)):
+            if header.isSectionHidden(col) == (col in shown):
+                header.setSectionHidden(col, col not in shown)
+
+    def _column_resized(self, col, _old, new):
+        if col in self._column_widths and new > 0 and new != self._column_widths[col]:  # (0: hidden)
+            self._column_widths[col] = new
+            settings.setValue("list_column_widths",
+                              ",".join(str(self._column_widths.get(c, 0)) for c in range(len(EntryModel.COLUMNS))))
+
+    def _columns_menu(self, pos):
+        """Right-click a heading: which columns to show."""
+        menu = CheckableMenu(parent=self)
+        chosen = self._chosen_columns()
+        for col in sorted(self.COLUMN_WIDTHS):
+            action = Action(EntryModel.COLUMNS[col], checkable=True)
+            action.setChecked(col in chosen)
+            action.triggered.connect(lambda on, c=col: self._choose_column(c, on))
+            menu.addAction(action)
+        header = self.table.horizontalHeader()
+        menu.exec(header.mapToGlobal(pos), ani=False)
+
+    def _choose_column(self, col, on):
+        chosen = self._chosen_columns()
+        chosen = chosen | {col} if on else chosen - {col}
+        settings.setValue("list_columns", ",".join(str(c) for c in sorted(chosen)))
+        self._fit_columns()
+
+    def _heading_clicked(self, col):
+        """Sorts by that column (clicked again: the other way round). Dates start newest first."""
+        if col not in dict(self.SORTS).values():  # the password and the buttons: not sortable
+            self.table.horizontalHeader().setSortIndicator(self.model.sort_column, self.model.sort_order)
+            return
+        if col == self.model.sort_column:
+            order = Qt.DescendingOrder if self.model.sort_order == Qt.AscendingOrder else Qt.AscendingOrder
+        else:
+            order = Qt.DescendingOrder if col in (EntryModel.MODIFIED, EntryModel.CREATED) else Qt.AscendingOrder
+        self.sort_by(col, order)
 
     def _set_tree_icons(self):
         """Icons are rendered for the current theme, so redo them when it changes."""
@@ -2277,6 +2640,8 @@ class VaultView(QWidget):
         self.new_btn.setToolTip(shortcut_text(f"New {'note' if note else 'entry'} (Ctrl+N)"))
         self.new_btn.update()
         self.model.set_entries(entries)
+        if self.below:  # the folder column shows only where the list mixes folders
+            self._fit_columns()
         rows = [i for i, e in enumerate(self.model.entries) if e["uuid"] == select_uuid]
         if rows:
             self.table.selectRow(rows[0])
@@ -2303,6 +2668,8 @@ class VaultView(QWidget):
             QTimer.singleShot(0, self.leave_editor)
 
     def eventFilter(self, obj, event):
+        if obj is self.table.viewport() and event.type() == QEvent.Resize and self.below:
+            self._fit_columns()  # as many columns as fit
         if obj is self.table.viewport() and self._card_buttons(event):
             return True
         if (obj is self.tree.viewport() and event.type() == QEvent.MouseButtonRelease
@@ -2329,7 +2696,7 @@ class VaultView(QWidget):
         if row < 0:
             return None
         e = self.model.entries[row]
-        rect = self.table.visualRect(self.model.index(row, 0))
+        rect = self.delegate.row_rect(self.table.visualRect(self.model.index(row, 0)))
         return next(((e, field, tip) for field, _ico, tip, r in self.delegate.actions(e, rect)
                      if r.contains(pos)), None)
 
@@ -2369,17 +2736,7 @@ class VaultView(QWidget):
             # Copies straight away, and selects the entry, so it's still marked when Vault is brought back
             # (nothing starts dragging)
             self.table.selectRow(self.model.entries.index(e))
-            if field == "totp":
-                value, label = totp.code(e["totp"])[0], "2FA code"
-            else:
-                value, label = e[field], field.capitalize()
-            minimise = setting("minimise_on_copy", True)  # Settings → Minimise after copying
-            self.window().copy_secret(value, label, notify=not minimise)
-            self.delegate.done = (e["uuid"], field)
-            self.table.viewport().update()
-            QTimer.singleShot(1500, lambda done=self.delegate.done: self._clear_done(done))
-            if minimise:
-                self._minimise_after_release()
+            self._copy_field(e, field)
         return True  # the button has the click (not the card underneath)
 
     def _show_button_tip(self):
@@ -2391,11 +2748,11 @@ class VaultView(QWidget):
         if hit is None:
             return
         e, field, tip = hit
-        shown = self.model.show_passwords or (self.notes.revealed and self.notes.entry is e)
+        shown = self.model.is_revealed(e) or (self.notes.revealed and self.notes.entry is e)
         value = {"username": e["username"], "password": e["password"] if shown else MASK,
                  "totp": totp.code(e["totp"])[0] if field == "totp" else "", "favourite": tip}[field]
-        rect = next(r for f, _i, _t, r in self.delegate.actions(e, self.table.visualRect(
-            self.model.index(self.model.entries.index(e), 0))) if f == field)
+        rect = next(r for f, _i, _t, r in self.delegate.actions(e, self.delegate.row_rect(self.table.visualRect(
+            self.model.index(self.model.entries.index(e), 0)))) if f == field)
         if field == "password" and shown and value:  # colour-coded, like the details
             dark_tip = QToolTip.palette().color(QPalette.ToolTipBase).lightness() < 128
             value = (f'<span style="font-family:\'{MONO_FAMILY}\'; font-size:14px">'
@@ -2481,6 +2838,7 @@ class VaultView(QWidget):
         self.delegate.font.setPixelSize(round(13 * k))
         self.delegate.italic.setPixelSize(round(13 * k))
         self.delegate.small.setPixelSize(round(13 * k))
+        self.delegate.mono.setPixelSize(round(13 * k))
         self.set_density(self._density)  # row height and icons follow the text
         # The UI library draws folder names in a fixed 13 px font unless an item carries its own.
         self._tree_font = getFont(round(13 * k))
@@ -2531,8 +2889,8 @@ class VaultView(QWidget):
         self.table.viewport().update()
 
     def _on_reveal(self, on):
-        """Show passwords: in the details and the key buttons' tooltips, for every entry (the list
-        itself shows only names)."""
+        """Show passwords: in the details, the key buttons' tooltips and (with the details below the
+        list) its password column, for every entry."""
         self.model.set_show_passwords(on)
         self.reveal.setIcon(FIF.HIDE if on else FIF.VIEW)
         self.reveal.setToolTip("Hide passwords" if on else "Show passwords")
@@ -2541,11 +2899,22 @@ class VaultView(QWidget):
             self.editor.password.set_revealed(on)
 
     def toggle_password(self):
-        if self.current_entry():
-            self.notes.set_revealed(not self.notes.revealed)
+        """Shows or hides the selected entry's password: in the details and the list's password column."""
+        e = self.current_entry()
+        if not e:
+            return
+        on = not self.notes.revealed
+        self.notes.set_revealed(on)
+        if not self.model.show_passwords and (id(e) in self.model.revealed) != on:
+            self.model.toggle_revealed(e)
 
     def change_password(self):
         """Edits the selected entry with a newly generated password (from its health advice)."""
+        if self.below:  # in the pop-up editor
+            e = self.current_entry()
+            if e and self._editable():
+                self._open_editor(entry=e, generate=True)
+            return
         self.edit_entry()
         if self.editor is not None and self.editor.entry is not None:
             self.editor._generate()
@@ -2560,15 +2929,18 @@ class VaultView(QWidget):
                                    f"{'Starring' if on else 'Unstarring'} “{e['title']}”")
 
     def _on_double_click(self, index):
-        """Double-clicking an entry copies its password, then (Settings → Minimise after double-click
-        copy) gets Vault out of the way, ready to paste. No password: opens it for editing."""
+        """Double-clicking an entry copies its password, then (Settings → Minimise after copying) gets
+        Vault out of the way, ready to paste. No password: opens it for editing. In the columns, a
+        username or password copies that (an empty one does nothing), and a website opens."""
         self.table.selectRow(index.row())
         e = self.model.data(index, Qt.UserRole)
-        if e["password"]:
-            minimise = setting("minimise_on_copy", True)
-            self.window().copy_secret(e["password"], "Password", notify=not minimise)
-            if minimise:
-                self._minimise_after_release()
+        col = index.column()
+        if col in (EntryModel.USERNAME, EntryModel.PASSWORD):
+            self._copy_field(e, "username" if col == EntryModel.USERNAME else "password")
+        elif col == EntryModel.WEBSITE and e["url"]:
+            self.open_url()
+        elif e["password"]:
+            self._copy_field(e, "password")
         else:
             self.edit_entry()
 
@@ -2576,19 +2948,26 @@ class VaultView(QWidget):
         """U, P or T in the list: copies the selected entry's username, password or 2FA code as its card's
         button does (a tick on the button, then Settings → Minimise after copying)."""
         e = self.current_entry()
-        if not e or not (e["totp"] if field == "totp" else e[field]):
-            return
+        if e:
+            self._copy_field(e, field)
+
+    def _copy_field(self, e, field):
+        """Copies an entry's username, password or 2FA code (from its card's buttons, a double-click or
+        U, P and T): a tick on its button (and its cell, in the columns) for a moment, then Settings →
+        Minimise after copying."""
         if field == "totp":
-            value, label = totp.code(e["totp"])[0], "2FA code"
+            value, label = (totp.code(e["totp"])[0] if e["totp"] else ""), "2FA code"
         else:
             value, label = e[field], field.capitalize()
+        if not value:
+            return
         minimise = setting("minimise_on_copy", True)
         self.window().copy_secret(value, label, notify=not minimise)
         self.delegate.done = (e["uuid"], field)
         self.table.viewport().update()
         QTimer.singleShot(1500, lambda done=self.delegate.done: self._clear_done(done))
         if minimise:
-            self.window().showMinimized()
+            self._minimise_after_release()
 
     def _minimise_after_release(self, tries=50):
         """Minimises once the double-click's mouse button is back up (or after a second at most).
@@ -2637,8 +3016,12 @@ class VaultView(QWidget):
 
     # ---- editing in the details pane
 
-    def _open_editor(self, entry=None, folder_id=None, note=False):
-        """Shows the form in the details pane, beside the list (any other edit is finished first)."""
+    def _open_editor(self, entry=None, folder_id=None, note=False, generate=False):
+        """Shows the form in the details pane, beside the list (any other edit is finished first); with
+        the details below the list, in a pop-up instead (the strip is too short for it)."""
+        if self.below:
+            self._open_popup_editor(entry, folder_id, note, generate)
+            return
         if not self.leave_editor():
             return
         self._show_page()
@@ -2665,9 +3048,26 @@ class VaultView(QWidget):
         if self.isVisible():
             self.table.setFocus()
 
+    def _open_popup_editor(self, entry, folder_id, note, generate):
+        editor = self._popup = EntryEditor(self.window(), self.db, entry, folder_id, note)
+        if entry is not None:  # a new entry's generated password shows anyway
+            editor.show_pw.setChecked(self.model.show_passwords)
+        if generate:  # from its health advice: a new password
+            editor._generate()
+            editor.password.setFocus()
+        op = editor.op if editor.exec() else None
+        self._popup = None
+        editor.deleteLater()
+        if self.db is not None:  # (not locked meanwhile: that closes it, unsaved)
+            self._submit_edit(entry, op)
+
     def _editor_saved(self, pane):
         op, entry = pane.op, pane.entry
         self._close_editor(pane)
+        self._submit_edit(entry, op)
+
+    def _submit_edit(self, entry, op):
+        """Saves what the editor (pane or pop-up) changed, if anything."""
         if op is None:  # nothing changed
             return
         if entry is None:
@@ -3556,13 +3956,15 @@ class EntryForm:
 
 
 class EntryEditor(EntryForm, MessageBoxBase):
-    """Create or edit an entry in a pop-up (used from Password health). After exec(), `op` holds the
-    change (or None)."""
+    """Create or edit an entry in a pop-up (used from Password health, and with the details below the
+    list). Ctrl+S saves, Esc cancels. After exec(), `op` holds the change (or None)."""
 
-    def __init__(self, parent, db, entry=None, folder_id=None):
+    def __init__(self, parent, db, entry=None, folder_id=None, note=False):
         MessageBoxBase.__init__(self, parent)
-        self._build_form(db, entry, folder_id)
-        self.yesButton.setText("Save" if entry else "Add entry")
+        self._build_form(db, entry, folder_id, note)
+        self.yesButton.setText("Save" if entry else "Add note" if note else "Add entry")
+        self.yesButton.setToolTip(shortcut_text("Save (Ctrl+S)"))
+        local_shortcut("Ctrl+S", self, self.yesButton.click)
         self.cancelButton.setText("Cancel")
         self.widget.setMinimumWidth(560)
         self._fit()
@@ -4936,9 +5338,10 @@ class SettingsView(ScrollArea):
             "Clear clipboard after", "How long copied usernames, passwords and 2FA codes stay on the clipboard "
             "before Vault wipes them.", clipboard))
         root.addWidget(self._row(
-            "Minimise after copying", "Copying a username or password from the list (its buttons, or "
-            "double-clicking an entry for the password) gets Vault out of the way, ready to paste. "
-            "Off: Vault stays open.", self._bool_switch("minimise_on_copy")))
+            "Minimise after copying", "Copying a username or password from the list (its buttons, "
+            "double-clicking an entry for the password, or with the details below the list, double-clicking "
+            "its username or password) gets Vault out of the way, ready to paste. Off: Vault stays open.",
+            self._bool_switch("minimise_on_copy")))
         idle = ComboBox()
         idle.addItems(list(IDLE_LOCK_CHOICES))
         idle.setCurrentText(next(k for k, v in IDLE_LOCK_CHOICES.items() if v == idle_lock_minutes()))

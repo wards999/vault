@@ -19,10 +19,14 @@ Then choose your database file, type your master password and click **Unlock**.
 
 ## Features
 
-- **A grid of entries:** site, username and password in rows, with folders alongside. Columns sort,
-  and the window size, panel sizes and last folder are remembered.
-- **Quick copying:** double-click a username or password to copy it and minimise Vault. The clipboard
-  clears itself after a time you choose.
+- **A list of entries** with folders alongside, and the selected entry's details beside the list or,
+  with the button by **Sort**, below it. Below, the list shows columns (username, password, website,
+  folder, modified and created dates) that sort from their headings; right-click a heading to choose
+  them, and they give way one by one when the window is narrow. The notes, details and activity
+  are then on tabs, and entries are added and edited in a pop-up. The layout, window size, panel
+  sizes and last folder are remembered.
+- **Quick copying:** double-click an entry to copy its password (or, with the details below the list,
+  its username or password) and minimise Vault. The clipboard clears itself after a time you choose.
 - **Editing:** add, edit, duplicate and delete entries; create, rename and move folders, including by
   drag and drop. **Undo** brings back deletions and other changes.
 - **Password generator** for random passwords or passphrases, with a strength meter and optional

@@ -4,7 +4,8 @@
 - WORK is a temporary folder (shared by run_all.py, or a fresh one) holding the test databases
   from fixtures.py, plus anything a test writes;
 - settings and backups go to WORK (VAULT_SETTINGS / VAULT_BACKUPS), never the real ones;
-- QProcess.startDetached raises: a test must never start another copy of anything.
+- QProcess.startDetached raises: a test must never start another copy of anything;
+- the file-dialog helper process can't start: dialogs fall back to (stubbable) QFileDialog.
 
 Tests print "OK ..." / "FAIL ..." lines; run_all.py treats a FAIL line, a traceback or a timeout as a failure.
 """
@@ -36,6 +37,23 @@ def _no_processes(*args, **kwargs):
 
 
 QProcess.startDetached = staticmethod(_no_processes)
+
+# Windows' file dialogs are shown by a helper process (vault.ask_path), which the tests' stand-ins for
+# QFileDialog can't reach: a real dialog opened and waited for a click until the test timed out. Starting
+# the helper fails here instead, so Vault falls back to QFileDialog in its own process (and its stand-ins).
+import subprocess  # noqa: E402
+
+_popen = subprocess.Popen
+
+
+class _NoDialogHelper(_popen):
+    def __init__(self, args, *rest, **kwargs):
+        if "--ask-path" in (args if isinstance(args, (list, tuple)) else [args]):
+            raise OSError("tests must not show real file dialogs")
+        super().__init__(args, *rest, **kwargs)
+
+
+subprocess.Popen = _NoDialogHelper
 
 PW = fixtures.PW
 _failures = []
