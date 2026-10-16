@@ -16,7 +16,7 @@ REPO = Path(__file__).resolve().parents[1]
 WORK = Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir()) / "vault-memcheck"
 DB = WORK / "memcheck.kdbx"
 PW = "memcheck-pw"
-ENTRIES = 638  # a real database's size: 638 entries, 1.9 MB, mostly password history
+ENTRIES = 638  # like a real database: 638 entries, 1.9 MB, mostly 128 px site icons
 
 
 def footprint_mb():
@@ -60,6 +60,23 @@ def macos_breakdown(title):
     return ""
 
 
+def site_icon(size, seed):
+    """A PNG that compresses about as well as a real site icon (~3 KB at 128 px)."""
+    import random
+    from PySide6.QtCore import QBuffer, QByteArray, QIODevice
+    from PySide6.QtGui import QColor, QImage
+    rnd = random.Random(seed)
+    image = QImage(size, size, QImage.Format_ARGB32)
+    image.fill(QColor(rnd.randrange(256), rnd.randrange(256), 90))
+    for _ in range(size * 3):
+        image.setPixelColor(rnd.randrange(size), rnd.randrange(size), QColor(rnd.randrange(256), 0, 0))
+    data = QByteArray()
+    buffer = QBuffer(data)
+    buffer.open(QIODevice.WriteOnly)
+    image.save(buffer, "PNG")
+    return bytes(data)
+
+
 def build_db():
     from pykeepass import create_database
     WORK.mkdir(parents=True, exist_ok=True)
@@ -77,15 +94,13 @@ def build_db():
     for i in range(ENTRIES):
         e = kp.add_entry(folders[i % len(folders)], f"Site {i}", f"user{i}@example.com", f"pw-{i}-Xq9!zz{i * 7}",
                          url=f"https://site{i}.example.com", notes="Some notes\n" * (i % 4))
-        if i % 2:  # a site icon for half of them
-            icon = base64.b64encode(uuid.uuid4().bytes).decode()
-            element = etree.SubElement(icons, "Icon")
-            etree.SubElement(element, "UUID").text = icon
-            etree.SubElement(element, "Data").text = base64.b64encode(b"\x89PNG" + os.urandom(1500)).decode()
-            etree.SubElement(e._element, "CustomIconUUID").text = icon
-        for n in range(i % 11):  # up to 10 older versions (KeePassXC's default limit)
+        icon = base64.b64encode(uuid.uuid4().bytes).decode()  # a 128 px site icon (as KeePassXC keeps them)
+        element = etree.SubElement(icons, "Icon")
+        etree.SubElement(element, "UUID").text = icon
+        etree.SubElement(element, "Data").text = base64.b64encode(site_icon(128, i)).decode()
+        etree.SubElement(e._element, "CustomIconUUID").text = icon
+        for n in range(i % 3):  # a little history
             e.password = f"old-{n}-{i}"
-            e.notes = base64.b64encode(os.urandom(400)).decode()
             e.save_history()
     kp.save()
     print(f"test database: {ENTRIES} entries, {DB.stat().st_size / 1e6:.2f} MB", flush=True)
@@ -123,7 +138,7 @@ def isolated(code):
 def app_run(mode=""):
     """Vault as it really starts, step by step, in this process; then rounds of ordinary use, to see
     whether memory keeps growing. mode "retina": drawn at 2x (as on a Retina screen), start-up only;
-    "norelease": without release_after_work (as before it), start-up only."""
+    "before": without this branch's memory fixes (no release after work, icons kept full size), start-up only."""
     retina = mode == "retina"
     os.environ["VAULT_SETTINGS"] = str(WORK / f"settings{'-retina' if retina else ''}.ini")
     os.environ["VAULT_BACKUPS"] = str(WORK / "backups")
@@ -142,8 +157,9 @@ def app_run(mode=""):
     import vault
     import store
     mark("vault + qfluentwidgets imported")
-    if mode == "norelease":
+    if mode == "before":
         vault.release_after_work = lambda: None
+        vault.EntryIcons.MAX_PIXELS = 10**6
     vault.settings.setValue("last_file", str(DB))  # the unlock dialog opens this database
     vault.settings.setValue("last_keyfile", "")
     vault.use_system_ui_font()
@@ -175,6 +191,11 @@ def app_run(mode=""):
         mark(f"unlocked 3 s ({len(w.vault.db.entries)} entries), health checked")
         yield 4.0  # memory released 4 s after unlocking
         mark("unlocked 7 s")
+        for i in range(0, len(w.vault.db.entries), 8):  # through the whole list, drawing every icon
+            w.vault.refresh(select_uuid=w.vault.db.entries[i]["uuid"])
+            yield 0.03
+        yield 2.0
+        mark("whole list scrolled through")
         if mode:
             macos_breakdown(f"{mode}, unlocked")
             return
@@ -259,8 +280,8 @@ def main():
         print(f"{name:<62} {isolated(code)}", flush=True)
     print("\n=== Vault, step by step (Activity Monitor's \"Memory\")", flush=True)
     r = subprocess.run([sys.executable, __file__, "--app"], timeout=600)
-    print("\n=== start-up without releasing memory after unlocking/saving (as before)", flush=True)
-    subprocess.run([sys.executable, __file__, "--app", "norelease"], timeout=300)
+    print("\n=== the same start-up without this branch's memory fixes (as before)", flush=True)
+    subprocess.run([sys.executable, __file__, "--app", "before"], timeout=300)
     print("\n=== start-up drawn at 2x, as on a Retina screen", flush=True)
     subprocess.run([sys.executable, __file__, "--app", "retina"], timeout=300)
     sys.exit(r.returncode)
