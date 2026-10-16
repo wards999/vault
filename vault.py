@@ -289,14 +289,31 @@ def trim_memory(light=False):
         psapi.EmptyWorkingSet.argtypes = [ctypes.c_void_p]
         psapi.EmptyWorkingSet(kernel32.GetCurrentProcess())
     elif sys.platform == "darwin":
-        try:
-            import ctypes
-            libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
-            libc.malloc_zone_pressure_relief.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
-            libc.malloc_zone_pressure_relief.restype = ctypes.c_size_t
-            libc.malloc_zone_pressure_relief(None, 0)  # all malloc zones, as much as they can
-        except (OSError, AttributeError):
-            pass
+        _mac_malloc_relief()
+
+
+def _mac_malloc_relief():
+    """macOS: hand back the memory malloc keeps after it's been freed (all zones, as much as they can)."""
+    try:
+        import ctypes
+        libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
+        libc.malloc_zone_pressure_relief.argtypes = [ctypes.c_void_p, ctypes.c_size_t]
+        libc.malloc_zone_pressure_relief.restype = ctypes.c_size_t
+        libc.malloc_zone_pressure_relief(None, 0)
+    except (OSError, AttributeError):
+        pass
+
+
+def release_after_work():
+    """After opening, saving or reloading the database. Each briefly needs several copies of it (Argon2's
+    64 MB or more; a save copies the whole XML tree, then opens the result again to check it), and
+    macOS's malloc keeps freed memory, still counted as Vault's in Activity Monitor (a 2 MB database
+    sat at ~300 MB after unlocking), until it's asked for it back. Leaves the pixmap cache (the window is
+    showing) and, on Windows, the working set (pages would just come back on the next paint) alone."""
+    import gc
+    gc.collect()  # ~0.02 s: little garbage is cyclic, but some of it holds the file's bytes
+    if sys.platform == "darwin":
+        _mac_malloc_relief()
 
 
 def use_system_ui_font():
@@ -4890,6 +4907,7 @@ class SaveController(QObject):
                 self.retry_timer.start()
             return
         db.digest = new_digest
+        release_after_work()
         if backup:
             self.last_backup = time.time()
         self.unsaved.clear()
@@ -4932,6 +4950,7 @@ class SaveController(QObject):
                     store.apply_op(fresh, resolved, force=True, own=self.own)
                     replayed.append(resolved)
         db.replace_kp(fresh, data)
+        release_after_work()
         self.unsaved = replayed
         self.last_stat = self._stat()
         self.reloaded.emit()
@@ -5054,6 +5073,7 @@ class SaveController(QObject):
             return
         data, fresh = result
         db.replace_kp(fresh, data)
+        release_after_work()
         self.reloaded.emit()
         self.status.emit(f"Updated from elsewhere at {datetime.now():%H:%M}")
         self._info("Updated", "Loaded changes made by another device or app.")
@@ -6440,6 +6460,8 @@ class MainWindow(FluentWindow):
             self._taskbar_padlock(False)
             self.idle.arm(True)
             QTimer.singleShot(0, self.vault.focus_search)  # ready to type what you're looking for
+            # Once the first password health check (1.5 s in) has run too
+            QTimer.singleShot(4000, lambda: not self.locked and release_after_work())
             name = Path(dialog.path).name
             self.setWindowTitle(f"Vault — {name}" if db.writable else f"Vault — {name} (read-only)")
             if not db.writable:
