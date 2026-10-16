@@ -39,7 +39,7 @@ from PySide6.QtWidgets import (
     QApplication, QAbstractButton, QLabel, QWidget, QHBoxLayout, QVBoxLayout, QTreeWidgetItem, QTreeWidgetItemIterator,
     QFileDialog, QHeaderView, QAbstractItemView, QSplitter, QSplitterHandle, QLineEdit, QTableWidgetItem,
     QStyledItemDelegate, QDialog, QGraphicsDropShadowEffect, QSizePolicy, QGridLayout, QButtonGroup,
-    QStyle, QStyleOptionViewItem, QToolTip, QStackedWidget, QFrame,
+    QStyle, QStyleOptionViewItem, QToolTip, QStackedWidget, QFrame, QPushButton,
 )
 from qfluentwidgets import (
     FluentWindow, NavigationItemPosition, FluentIcon as FIF, setTheme, Theme,
@@ -1276,6 +1276,26 @@ def local_shortcut(keys, widget, handler):
     return shortcut
 
 
+class IconOrTextButton(PushButton):
+    """A PushButton that can drop its text (setText("")) for just its icon, centred. (The UI library
+    places the icon as if text followed it, which puts it off the edge of a narrow button.)"""
+
+    def paintEvent(self, e):
+        if self.text():
+            return super().paintEvent(e)
+        QPushButton.paintEvent(self, e)
+        if self.icon().isNull():
+            return
+        painter = QPainter(self)
+        painter.setRenderHints(QPainter.Antialiasing | QPainter.SmoothPixmapTransform)
+        if not self.isEnabled():
+            painter.setOpacity(0.3628)
+        elif self.isPressed:
+            painter.setOpacity(0.786)
+        w, h = self.iconSize().width(), self.iconSize().height()
+        self._drawIcon(self._icon, painter, QRectF((self.width() - w) / 2, (self.height() - h) / 2, w, h))
+
+
 def caption(text):
     label = CaptionLabel(text)
     label.setTextColor("#6b6b6b", "#a0a0a0")
@@ -1527,7 +1547,7 @@ class NotesPanel(QWidget):
         self.history_btn.setToolTip(shortcut_text("History: earlier versions of this entry (Ctrl+H)"))
         self.history_btn.clicked.connect(lambda: vault().show_history())
         head.addWidget(self.history_btn, 0, Qt.AlignVCenter)
-        self.edit_btn = PushButton(FIF.EDIT, "Edit")
+        self.edit_btn = IconOrTextButton(FIF.EDIT, "Edit")
         self.edit_btn.setToolTip(shortcut_text("Edit (Enter)"))
         self.edit_btn.clicked.connect(lambda: vault().edit_entry())
         head.addWidget(self.edit_btn, 0, Qt.AlignVCenter)
@@ -1695,8 +1715,9 @@ class NotesPanel(QWidget):
         self.tabs = SegmentedWidget()
         for key, text in (("notes", "Notes"), ("details", "Details"), ("activity", "Activity")):
             item = self.tabs.addItem(key, text)
-            item.setFixedHeight(24)  # compact: the strip takes room from the list (the UI library's are 29)
+            item.setFixedHeight(22)  # compact: the strip takes room from the list (the UI library's are 29)
             item.setFont(getFont(12))
+            item.setStyleSheet("padding-top: 0px; padding-bottom: 2px;")  # (its 10 px would clip the text)
         bar.addWidget(self.tabs, 0, Qt.AlignVCenter)
         bar.addStretch(1)
         self.details_page = QWidget(objectName="detailsPage")
@@ -1738,10 +1759,11 @@ class NotesPanel(QWidget):
         while root.count():  # (the widgets stay; only the layout's hold on them goes)
             root.takeAt(0)
         if below:
-            root.setContentsMargins(16, 4, 16, 10)
-            # As compact as the tabs beside them: the strip is 26 px rather than 36
-            self.history_btn.setFixedSize(26, 26)
-            self.edit_btn.setFixedHeight(26)
+            root.setContentsMargins(16, 2, 16, 10)
+            # As compact as the tabs beside them: the strip is 22 px rather than 36, Edit just its pencil
+            self.history_btn.setFixedSize(22, 22)
+            self.edit_btn.setText("")
+            self.edit_btn.setFixedSize(30, 22)
             for button in (self.history_btn, self.edit_btn):
                 self.strip_bar.layout().addWidget(button, 0, Qt.AlignVCenter)
             self.details_page_layout.insertWidget(0, self.advice)
@@ -1749,13 +1771,14 @@ class NotesPanel(QWidget):
             self.pages.insertWidget(0, self.notes_box)
             self.pages.insertWidget(2, self.activity_box)
             root.addWidget(self.strip_bar)
-            root.addSpacing(4)
+            root.addSpacing(2)
             root.addWidget(self.pages, 1)
         else:
             root.setContentsMargins(30, 20, 26, 14)
             self.history_btn.setFixedSize(36, 36)
-            self.edit_btn.setMinimumHeight(0)
-            self.edit_btn.setMaximumHeight(16777215)  # (QWIDGETSIZE_MAX: its own height again)
+            self.edit_btn.setText("Edit")
+            self.edit_btn.setMinimumSize(0, 0)
+            self.edit_btn.setMaximumSize(16777215, 16777215)  # (QWIDGETSIZE_MAX: its own size again)
             for button in (self.history_btn, self.edit_btn):
                 self.head.addWidget(button, 0, Qt.AlignVCenter)
             self.more_layout.insertWidget(1, self.advice)
