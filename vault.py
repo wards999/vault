@@ -1319,7 +1319,7 @@ class GripHandle(QSplitterHandle):
         p.setRenderHint(QPainter.Antialiasing)
         p.setPen(Qt.NoPen)
         p.setBrush(QColor(128, 128, 128, 150 if self.underMouse() else 70))
-        length, thickness = 40, 4
+        length, thickness = 32, 3
         c = self.rect().center()
         if self.orientation() == Qt.Vertical:  # handle between stacked widgets: horizontal grip
             r = QRect(c.x() - length // 2, c.y() - thickness // 2 + 1, length, thickness)
@@ -1510,7 +1510,7 @@ class NotesPanel(QWidget):
         self.entry = None
         self.revealed = False
         root = self.outer = QVBoxLayout(self)
-        root.setContentsMargins(30, 20, 26, 14)
+        root.setContentsMargins(18, 20, 26, 14)
         root.setSpacing(0)
         vault = lambda: self.window().vault
         self.below = False  # under the list: a strip with tabs (see set_below)
@@ -1626,8 +1626,8 @@ class NotesPanel(QWidget):
         for box in (notes_box, activity_box):
             box.setMinimumHeight(60)
         self.details_splitter = GripSplitter(Qt.Vertical, "details_splitter", [notes_box, activity_box], [420, 150])
-        self.details_splitter.setHandleWidth(14)
-        details.addSpacing(16)
+        self.details_splitter.setHandleWidth(8)
+        details.addSpacing(12)
         details.addWidget(self.details_splitter, 1)
 
         # The notes, typed straight in here (saved a moment after typing stops)
@@ -1774,7 +1774,7 @@ class NotesPanel(QWidget):
             root.addSpacing(2)
             root.addWidget(self.pages, 1)
         else:
-            root.setContentsMargins(30, 20, 26, 14)
+            root.setContentsMargins(18, 20, 26, 14)
             self.history_btn.setFixedSize(36, 36)
             self.edit_btn.setText("Edit")
             self.edit_btn.setMinimumSize(0, 0)
@@ -2266,7 +2266,8 @@ class VaultView(QWidget):
         # The list's heading: the folder name with sort and check buttons, and under it
         # "302 entries · All changes saved"
         right = QVBoxLayout()
-        right.setContentsMargins(14, 14, 6, 6)
+        right.setContentsMargins(14, 14, 4, 4)
+        self.list_layout = right
         right.setSpacing(8)
         head = QHBoxLayout()
         head.setContentsMargins(8, 0, 0, 0)
@@ -2391,7 +2392,7 @@ class VaultView(QWidget):
         self._popup = None  # EntryEditor (a pop-up) instead, with the details below the list
         self._editor_anchor = None  # the entry selected when it opened (staying on it keeps it open)
         self.splitter = GripSplitter(Qt.Horizontal, "list_splitter", [list_box, self.details], [380, 900])
-        self.splitter.setHandleWidth(9)
+        self.splitter.setHandleWidth(6)  # thin: it takes room from the list and details
         root.addWidget(self.splitter)
         self.set_details_below(setting("details_layout", "right") == "below", save=False)
         # The UI library pads each folder row by 20 px on the left; 12 still clears the expand arrows.
@@ -2531,6 +2532,8 @@ class VaultView(QWidget):
         self.below = below
         if save:
             settings.setValue("details_layout", "below" if below else "right")
+        # Below, the list runs right down to the divider: the strip under it starts 2 px after
+        self.list_layout.setContentsMargins(14, 14, 4, 0 if below else 4)
         if below:  # each layout keeps its own divider position
             self.splitter.set_layout(Qt.Vertical, "list_splitter_below", [520, 260])
         else:
@@ -4032,7 +4035,7 @@ class EntryEditPane(EntryForm, QWidget):
     def __init__(self, parent, db, entry=None, folder_id=None, note=False):
         QWidget.__init__(self, parent)
         self.viewLayout = QVBoxLayout(self)
-        self.viewLayout.setContentsMargins(30, 20, 26, 14)
+        self.viewLayout.setContentsMargins(18, 20, 26, 14)  # as the details it replaces
         self.widget = self  # username suggestions float over the pane
         self.yesButton = PrimaryPushButton("Save" if entry else "Add note" if note else "Add entry")
         self.cancelButton = PushButton("Cancel")
