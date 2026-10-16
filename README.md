@@ -84,9 +84,10 @@ Then choose your database file, type your master password and click **Unlock**.
   temporary folder; your real settings and databases are never touched. Install the extras with
   `pip install -r tests/requirements.txt`; KeePassXC is used to cross-check files when it's installed.
   GitHub Actions runs them on every push to main, and before building a release.
-- **Release:** set `VERSION` in `vault.py`, commit, then push a tag `v<VERSION>` (for example
-  `git tag v1.0.5; git push origin main v1.0.5`). GitHub Actions builds both apps and publishes the
-  release, and refuses if the tag doesn't match `VERSION`.
+- **Release:** set `VERSION` in `vault.py`, commit and push to main. GitHub Actions sees a version
+  with no release yet, runs the tests, builds both apps, then creates the tag `v<VERSION>` and
+  publishes the release. Pushing the tag yourself also works (for example
+  `git tag v1.0.5; git push origin main v1.0.5`); it's refused if the tag doesn't match `VERSION`.
 
 Built with Python, PySide6, [PySide6-Fluent-Widgets](https://github.com/zhiyiYo/PyQt-Fluent-Widgets)
 and [pykeepass](https://github.com/libkeepass/pykeepass).

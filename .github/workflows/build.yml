@@ -1,22 +1,62 @@
-# Builds Vault for Windows and macOS when a release tag is pushed, or on demand from the Actions tab
-# (download the results from the run's "Artifacts" section). Plain pushes to main don't build: Mac
-# minutes count 10x against the free monthly allowance.
+# Builds Vault for Windows and macOS, and publishes releases. Mac minutes count 10x against the free
+# monthly allowance, so only releases (and runs started by hand) build.
 #
-# Releases: pushing a tag like v1.2.0 (which must match VERSION in vault.py) builds both apps and
-# publishes a GitHub Release with both zips attached:   git tag v1.2.0   then   git push origin v1.2.0
+# Releases, either way:
+# - push a commit to main that changes VERSION in vault.py to one with no release yet: the tests run,
+#   both apps build, then the tag v<VERSION> and its GitHub Release (both zips attached) are created;
+# - or push a tag like v1.2.0 (which must match VERSION in vault.py):   git tag v1.2.0   then
+#   git push origin v1.2.0
+# Other pushes to main only check the version (a few seconds on Linux).
+# Run by hand from the Actions tab, it builds both apps (download them from the run's "Artifacts").
 name: Build
 
 on:
   push:
+    branches: [main]
     tags: ["v*"]
   workflow_dispatch:
 
 permissions:
   contents: write  # lets the release job publish releases
 
-# No test run here: the tests already ran (tests.yml) when the release commit was pushed to main.
 jobs:
+  version:
+    runs-on: ubuntu-latest
+    outputs:
+      build: ${{ steps.check.outputs.build }}
+      release: ${{ steps.check.outputs.release }}
+      tag: ${{ steps.check.outputs.tag }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: check
+        run: |
+          tag="v$(sed -n 's/^VERSION = "\([^"]*\)".*/\1/p' vault.py)"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          if [ "$GITHUB_EVENT_NAME" = workflow_dispatch ]; then
+            echo "build=true" >> "$GITHUB_OUTPUT"; echo "release=false" >> "$GITHUB_OUTPUT"
+          elif [ "$GITHUB_REF_TYPE" = tag ]; then
+            if [ "$tag" != "$GITHUB_REF_NAME" ]; then
+              echo "::error::Tag $GITHUB_REF_NAME doesn't match VERSION in vault.py ($tag)"
+              exit 1
+            fi
+            echo "build=true" >> "$GITHUB_OUTPUT"; echo "release=true" >> "$GITHUB_OUTPUT"
+          elif git ls-remote --exit-code --tags origin "refs/tags/$tag" > /dev/null; then
+            echo "$tag is already released: nothing to build"
+            echo "build=false" >> "$GITHUB_OUTPUT"; echo "release=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "New version $tag: testing, building and releasing it"
+            echo "build=true" >> "$GITHUB_OUTPUT"; echo "release=true" >> "$GITHUB_OUTPUT"
+          fi
+
+  # A pushed tag's commit was tested when it reached main; a version bump on main is tested here first.
+  tests:
+    needs: version
+    if: needs.version.outputs.release == 'true' && github.ref_type == 'branch'
+    uses: ./.github/workflows/tests.yml
+
   windows:
+    needs: [version, tests]
+    if: ${{ !cancelled() && needs.version.outputs.build == 'true' && needs.tests.result != 'failure' }}
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v5
@@ -33,6 +73,8 @@ jobs:
           retention-days: 3  # releases keep their own copies; this keeps storage small
 
   macos:
+    needs: [version, tests]
+    if: ${{ !cancelled() && needs.version.outputs.build == 'true' && needs.tests.result != 'failure' }}
     runs-on: macos-14  # Apple Silicon (M1 and later)
     steps:
       - uses: actions/checkout@v5
@@ -48,26 +90,20 @@ jobs:
           retention-days: 3
 
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: [windows, macos]
+    needs: [version, windows, macos]
+    if: ${{ !cancelled() && needs.version.outputs.release == 'true' && needs.windows.result == 'success' && needs.macos.result == 'success' }}
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
-      - name: Check the tag matches the app's version
-        run: |
-          version=$(sed -n 's/^VERSION = "\([^"]*\)".*/\1/p' vault.py)
-          if [ "v$version" != "$GITHUB_REF_NAME" ]; then
-            echo "::error::Tag $GITHUB_REF_NAME doesn't match VERSION = \"$version\" in vault.py"
-            exit 1
-          fi
       - uses: actions/download-artifact@v6
         with:
           path: artifacts
       - name: Publish the release
         env:
           GH_TOKEN: ${{ github.token }}
+          TAG: ${{ needs.version.outputs.tag }}
         run: |
-          mv artifacts/Vault-windows/Vault-portable.zip "Vault-${GITHUB_REF_NAME}-windows.zip"
-          mv artifacts/Vault-mac/Vault-mac.zip "Vault-${GITHUB_REF_NAME}-mac.zip"
-          gh release create "$GITHUB_REF_NAME" Vault-*.zip \
-            --title "Vault ${GITHUB_REF_NAME}" --generate-notes
+          mv artifacts/Vault-windows/Vault-portable.zip "Vault-${TAG}-windows.zip"
+          mv artifacts/Vault-mac/Vault-mac.zip "Vault-${TAG}-mac.zip"
+          # Creates the tag too (at this commit) when it was a version bump on main
+          gh release create "$TAG" Vault-*.zip --repo "$GITHUB_REPOSITORY" --target "$GITHUB_SHA" \
+            --title "Vault ${TAG}" --generate-notes
