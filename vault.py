@@ -1694,7 +1694,9 @@ class NotesPanel(QWidget):
         bar.setSpacing(8)
         self.tabs = SegmentedWidget()
         for key, text in (("notes", "Notes"), ("details", "Details"), ("activity", "Activity")):
-            self.tabs.addItem(key, text)
+            item = self.tabs.addItem(key, text)
+            item.setFixedHeight(24)  # compact: the strip takes room from the list (the UI library's are 29)
+            item.setFont(getFont(12))
         bar.addWidget(self.tabs, 0, Qt.AlignVCenter)
         bar.addStretch(1)
         self.details_page = QWidget(objectName="detailsPage")
@@ -1736,7 +1738,10 @@ class NotesPanel(QWidget):
         while root.count():  # (the widgets stay; only the layout's hold on them goes)
             root.takeAt(0)
         if below:
-            root.setContentsMargins(16, 8, 16, 10)
+            root.setContentsMargins(16, 4, 16, 10)
+            # As compact as the tabs beside them: the strip is 26 px rather than 36
+            self.history_btn.setFixedSize(26, 26)
+            self.edit_btn.setFixedHeight(26)
             for button in (self.history_btn, self.edit_btn):
                 self.strip_bar.layout().addWidget(button, 0, Qt.AlignVCenter)
             self.details_page_layout.insertWidget(0, self.advice)
@@ -1744,10 +1749,13 @@ class NotesPanel(QWidget):
             self.pages.insertWidget(0, self.notes_box)
             self.pages.insertWidget(2, self.activity_box)
             root.addWidget(self.strip_bar)
-            root.addSpacing(8)
+            root.addSpacing(4)
             root.addWidget(self.pages, 1)
         else:
             root.setContentsMargins(30, 20, 26, 14)
+            self.history_btn.setFixedSize(36, 36)
+            self.edit_btn.setMinimumHeight(0)
+            self.edit_btn.setMaximumHeight(16777215)  # (QWIDGETSIZE_MAX: its own height again)
             for button in (self.history_btn, self.edit_btn):
                 self.head.addWidget(button, 0, Qt.AlignVCenter)
             self.more_layout.insertWidget(1, self.advice)
