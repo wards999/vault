@@ -1,12 +1,10 @@
-# One-off check, run by hand from the Actions tab (or `gh workflow run mac-memory-check.yml`), or by
-# pushing to the mac-memory-check branch: where Vault's memory goes on macOS (see tools/mac_memory_check.py).
+# One-off check, run by hand from the Actions tab (or `gh workflow run mac-memory-check.yml`):
+# where Vault's memory goes on macOS (see tools/mac_memory_check.py).
 # About 3 Mac minutes (counted x10 against the free monthly allowance).
 name: Mac memory check
 
 on:
   workflow_dispatch:
-  push:
-    branches: [mac-memory-check]
 
 jobs:
   check:
