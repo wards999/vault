@@ -531,6 +531,8 @@ class EntryIcons:
     """Entry icons for one open database: the site's favicon stored in the database, else a
     KeePass built-in icon the user picked, else a letter avatar."""
 
+    MAX_PIXELS = 72  # the largest tile's icon (56 points x 0.6) on a 2x (Retina) screen, with a little to spare
+
     def __init__(self, db):
         self.db = db
         self.cache = {}
@@ -551,7 +553,13 @@ class EntryIcons:
         if not data:
             return None
         pm = QPixmap()
-        return QIcon(pm) if pm.loadFromData(data) else None
+        if not pm.loadFromData(data):
+            return None
+        # Icons from KeePassXC or other apps can be 128 px or more: 64 KB+ each once decoded, kept for
+        # every entry (a 1.9 MB database of them took ~70 MB). None is ever drawn bigger than ~34 points.
+        if max(pm.width(), pm.height()) > self.MAX_PIXELS:
+            pm = pm.scaled(self.MAX_PIXELS, self.MAX_PIXELS, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+        return QIcon(pm)
 
     def folder(self, icon):
         """A folder's own icon from the database, or None for the plain folder icons (48 folder,
