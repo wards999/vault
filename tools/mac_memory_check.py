@@ -83,8 +83,6 @@ ISOLATED = {
     "import Foundation": "import Foundation",
     "import AppKit": "import AppKit",
     "import LocalAuthentication": "import LocalAuthentication",
-    "objc.lookUpClass NSWorkspace + NSDistributedNotificationCenter":
-        "import objc; objc.lookUpClass('NSWorkspace').sharedWorkspace(); objc.lookUpClass('NSDistributedNotificationCenter').defaultCenter()",
     "import pykeepass": "import pykeepass",
     "import zxcvbn + one check": "from zxcvbn import zxcvbn; zxcvbn('Correct-Horse-9')",
     "QApplication": "from PySide6.QtWidgets import QApplication; app = QApplication([])",
@@ -107,15 +105,19 @@ def isolated(code):
     return f"total {total:>4} MB   (+{extra} MB for this)"
 
 
-def app_run():
-    """Vault as it really starts, step by step, in this process."""
-    os.environ["VAULT_SETTINGS"] = str(WORK / "settings.ini")
+def app_run(retina=False):
+    """Vault as it really starts, step by step, in this process; then rounds of ordinary use, to see
+    whether memory keeps growing. retina: drawn at 2x (as on a Retina screen); start-up only."""
+    os.environ["VAULT_SETTINGS"] = str(WORK / f"settings{'-retina' if retina else ''}.ini")
     os.environ["VAULT_BACKUPS"] = str(WORK / "backups")
+    if retina:
+        os.environ["QT_SCALE_FACTOR"] = "2"
     Path(os.environ["VAULT_SETTINGS"]).unlink(missing_ok=True)
     sys.path.insert(0, str(REPO))
     mark("Python started")
     import pykeepass  # noqa: F401  (Vault loads it in the background at start)
     mark("pykeepass imported")
+    from PySide6.QtCore import QTimer
     from PySide6.QtWidgets import QApplication
     from PySide6.QtTest import QTest
     app = QApplication(sys.argv)
@@ -123,6 +125,8 @@ def app_run():
     import vault
     import store
     mark("vault + qfluentwidgets imported")
+    vault.settings.setValue("last_file", str(DB))  # the unlock dialog opens this database
+    vault.settings.setValue("last_keyfile", "")
     vault.use_system_ui_font()
     vault.apply_theme(vault.theme_name())
     w = vault.MainWindow()
@@ -133,41 +137,96 @@ def app_run():
     QTest.qWaitForWindowExposed(w)
     QTest.qWait(1500)
     mark(f"window shown 1400x900 (device pixel ratio {w.devicePixelRatioF():g})")
-    db = store.Database(DB, PW, "")
-    mark(f"database decrypted ({len(db.entries)} entries)")
-    w.vault.load(db)
-    w.saver.attach(db)
-    w.locked = False
-    w.vault.refresh()
-    QTest.qWait(6000)  # includes the health check (zxcvbn) 1.5 s after loading
-    mark("unlocked, shown in the list, health checked")
-    e = db.entries[0]
-    w.vault.refresh(select_uuid=e["uuid"])
-    QTest.qWait(1500)
-    mark("an entry selected")
-    macos_breakdown("unlocked, window showing")
-    _last[0] = footprint_mb()
-    w.showMinimized()
-    QTest.qWait(3000)
-    mark("minimised 3 s (Vault's own trim ran at 1.5 s)")
-    QTest.qWait(30000)
-    mark("minimised 33 s")
-    macos_breakdown("minimised")
-    _last[0] = footprint_mb()
-    w.showNormal()
-    QTest.qWait(2000)
-    mark("restored")
-    w.lock()
-    QTest.qWait(4000)
-    mark("locked 4 s (database dropped, trimmed at 2 s)")
-    print("\nLoaded Qt plugins/frameworks:", flush=True)
-    libc = ctypes.CDLL("/usr/lib/libSystem.B.dylib")
-    libc._dyld_get_image_name.restype = ctypes.c_char_p
-    names = [libc._dyld_get_image_name(i).decode() for i in range(libc._dyld_image_count())]
-    for n in sorted(n for n in names if "/Qt" in n or "PySide6" in n or "plugins" in n):
-        print("  ", n.split("site-packages/")[-1])
-    print(f"({len(names)} images loaded in all)", flush=True)
-    os._exit(0)
+
+    def dialog():
+        return next((d for d in w.findChildren(vault.UnlockDialog) if d.isVisible()), None)
+
+    def unlock():
+        QTimer.singleShot(0, w.lock)
+        yield dialog
+        d = dialog()
+        d.pw.setText(PW)
+        d.yesButton.click()
+        yield lambda: not w.locked and w.vault.db is not None
+        yield 1.0
+
+    def steps():
+        yield from unlock()  # the real way: the unlock dialog, as at every start
+        yield 6.0  # includes the health check (zxcvbn) 1.5 s after loading
+        mark(f"unlocked ({len(w.vault.db.entries)} entries), list shown, health checked")
+        if retina:
+            macos_breakdown("Retina (2x), unlocked")
+            return
+        macos_breakdown("unlocked, window showing")
+        _last[0] = footprint_mb()
+        w.showMinimized()
+        yield 33.0
+        mark("minimised 33 s (Vault's own trim ran at 1.5 s)")
+        w.showNormal()
+        yield 2.0
+        mark("restored")
+
+        print("\n=== rounds of ordinary use (does memory keep growing?)", flush=True)
+        for rnd in range(1, 4):
+            for i in range(60):  # browsing: select entries, search, clear the search
+                entries = w.vault.db.entries
+                w.vault.refresh(select_uuid=entries[(i * 37 + rnd) % len(entries)]["uuid"])
+                w.vault.search.setText(f"site {i % 9}")
+                yield 0.05
+                w.vault.search.clear()
+                yield 0.05
+            mark(f"round {rnd}: 60 entries looked at, 60 searches")
+            for i in range(20):  # copying passwords (with the "copied" message)
+                w.copy_secret(f"pw-{i}", "Password")
+                yield 0.1
+            yield 3.0
+            mark(f"round {rnd}: 20 passwords copied")
+            for i in range(5):  # edits, each saved (encrypt, verify, write)
+                e = w.vault.db.entries[(rnd * 5 + i) % len(w.vault.db.entries)]
+                w.saver.submit(store.Op("update", e["uuid"], fields={"notes": f"edit {rnd}.{i}"},
+                                        all_fields={**e["raw"], "notes": f"edit {rnd}.{i}"}, folder=e["folder_id"],
+                                        base_mtime=e["base_mtime"], title=e["title"]))
+                w.saver.save_now()
+                yield lambda: not w.saver.pending
+            yield 2.0
+            mark(f"round {rnd}: 5 edits saved")
+            for i in range(3):  # minimise and restore
+                w.showMinimized()
+                yield 2.0
+                w.showNormal()
+                yield 1.0
+            mark(f"round {rnd}: minimised and restored 3 times")
+            for i in range(3):  # lock and unlock
+                yield from unlock()
+            yield 3.0
+            mark(f"round {rnd}: locked and unlocked 3 times")
+        macos_breakdown("after 3 rounds of use")
+
+    def run(gen):
+        def tick(cond=None):
+            try:
+                if callable(cond) and not cond():
+                    return QTimer.singleShot(50, lambda: tick(cond))
+                nxt = next(gen)
+                if callable(nxt):
+                    QTimer.singleShot(50, lambda: tick(nxt))
+                else:
+                    QTimer.singleShot(int(nxt * 1000), tick)
+            except StopIteration:
+                done()
+            except Exception:
+                import traceback
+                traceback.print_exc()
+                done()
+        QTimer.singleShot(0, tick)
+
+    def done():
+        print(flush=True)
+        os._exit(0)
+
+    QTimer.singleShot(480_000, lambda: (print("TIMED OUT", flush=True), done()))
+    run(steps())
+    app.exec()
 
 
 def main():
@@ -179,6 +238,8 @@ def main():
         print(f"{name:<62} {isolated(code)}", flush=True)
     print("\n=== Vault, step by step (Activity Monitor's \"Memory\")", flush=True)
     r = subprocess.run([sys.executable, __file__, "--app"], timeout=600)
+    print("\n=== start-up drawn at 2x, as on a Retina screen", flush=True)
+    subprocess.run([sys.executable, __file__, "--app", "retina"], timeout=300)
     sys.exit(r.returncode)
 
 
@@ -186,6 +247,6 @@ if __name__ == "__main__":
     if sys.argv[1:2] == ["--build"]:
         build_db()
     elif sys.argv[1:2] == ["--app"]:
-        app_run()
+        app_run(retina=sys.argv[2:3] == ["retina"])
     else:
         main()
