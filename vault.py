@@ -6428,8 +6428,11 @@ class MainWindow(FluentWindow):
         if accepted and self._quick_unlock_on() and dialog.password is not None:
             self.quick = quickunlock.Sealed(dialog.path, dialog.keyfile, dialog.password)
         dialog.password = None
+        # The dialog is the window's child, so it would otherwise outlive this unlock, still holding the
+        # decrypted database: after each lock, one more copy of every password stayed in memory.
+        db, dialog.db = dialog.db, None
+        dialog.deleteLater()
         if accepted:
-            db = dialog.db
             self.vault.load(db)
             self.saver.attach(db)
             self.health.set_db(db)
