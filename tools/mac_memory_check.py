@@ -16,7 +16,7 @@ REPO = Path(__file__).resolve().parents[1]
 WORK = Path(os.environ.get("RUNNER_TEMP") or tempfile.gettempdir()) / "vault-memcheck"
 DB = WORK / "memcheck.kdbx"
 PW = "memcheck-pw"
-ENTRIES = 640  # about the size of a real database
+ENTRIES = 638  # a real database's size: 638 entries, 1.9 MB, mostly password history
 
 
 def footprint_mb():
@@ -66,14 +66,29 @@ def build_db():
     DB.unlink(missing_ok=True)
     kp = create_database(str(DB), password=PW)
     kp.kdbx.header.value.minor_version = 1
+    import base64
+    import uuid
+    from lxml import etree
     folders = [kp.add_group(kp.root_group, name) for name in ("Work", "Personal", "Banking", "Shopping", "Email")]
+    meta = kp.tree.getroot().find("Meta")
+    icons = meta.find("CustomIcons")
+    if icons is None:
+        icons = etree.SubElement(meta, "CustomIcons")
     for i in range(ENTRIES):
         e = kp.add_entry(folders[i % len(folders)], f"Site {i}", f"user{i}@example.com", f"pw-{i}-Xq9!zz{i * 7}",
                          url=f"https://site{i}.example.com", notes="Some notes\n" * (i % 4))
-        for n in range(i % 3):  # a little history, as real entries have
+        if i % 2:  # a site icon for half of them
+            icon = base64.b64encode(uuid.uuid4().bytes).decode()
+            element = etree.SubElement(icons, "Icon")
+            etree.SubElement(element, "UUID").text = icon
+            etree.SubElement(element, "Data").text = base64.b64encode(b"\x89PNG" + os.urandom(1500)).decode()
+            etree.SubElement(e._element, "CustomIconUUID").text = icon
+        for n in range(i % 11):  # up to 10 older versions (KeePassXC's default limit)
             e.password = f"old-{n}-{i}"
+            e.notes = base64.b64encode(os.urandom(400)).decode()
             e.save_history()
     kp.save()
+    print(f"test database: {ENTRIES} entries, {DB.stat().st_size / 1e6:.2f} MB", flush=True)
 
 
 # Each in a fresh process: what one library costs by itself.
@@ -105,9 +120,11 @@ def isolated(code):
     return f"total {total:>4} MB   (+{extra} MB for this)"
 
 
-def app_run(retina=False):
+def app_run(mode=""):
     """Vault as it really starts, step by step, in this process; then rounds of ordinary use, to see
-    whether memory keeps growing. retina: drawn at 2x (as on a Retina screen); start-up only."""
+    whether memory keeps growing. mode "retina": drawn at 2x (as on a Retina screen), start-up only;
+    "norelease": without release_after_work (as before it), start-up only."""
+    retina = mode == "retina"
     os.environ["VAULT_SETTINGS"] = str(WORK / f"settings{'-retina' if retina else ''}.ini")
     os.environ["VAULT_BACKUPS"] = str(WORK / "backups")
     if retina:
@@ -125,6 +142,8 @@ def app_run(retina=False):
     import vault
     import store
     mark("vault + qfluentwidgets imported")
+    if mode == "norelease":
+        vault.release_after_work = lambda: None
     vault.settings.setValue("last_file", str(DB))  # the unlock dialog opens this database
     vault.settings.setValue("last_keyfile", "")
     vault.use_system_ui_font()
@@ -152,10 +171,12 @@ def app_run(retina=False):
 
     def steps():
         yield from unlock()  # the real way: the unlock dialog, as at every start
-        yield 6.0  # includes the health check (zxcvbn) 1.5 s after loading
-        mark(f"unlocked ({len(w.vault.db.entries)} entries), list shown, health checked")
-        if retina:
-            macos_breakdown("Retina (2x), unlocked")
+        yield 2.0
+        mark(f"unlocked 3 s ({len(w.vault.db.entries)} entries), health checked")
+        yield 4.0  # memory released 4 s after unlocking
+        mark("unlocked 7 s")
+        if mode:
+            macos_breakdown(f"{mode}, unlocked")
             return
         macos_breakdown("unlocked, window showing")
         _last[0] = footprint_mb()
@@ -238,6 +259,8 @@ def main():
         print(f"{name:<62} {isolated(code)}", flush=True)
     print("\n=== Vault, step by step (Activity Monitor's \"Memory\")", flush=True)
     r = subprocess.run([sys.executable, __file__, "--app"], timeout=600)
+    print("\n=== start-up without releasing memory after unlocking/saving (as before)", flush=True)
+    subprocess.run([sys.executable, __file__, "--app", "norelease"], timeout=300)
     print("\n=== start-up drawn at 2x, as on a Retina screen", flush=True)
     subprocess.run([sys.executable, __file__, "--app", "retina"], timeout=300)
     sys.exit(r.returncode)
@@ -247,6 +270,6 @@ if __name__ == "__main__":
     if sys.argv[1:2] == ["--build"]:
         build_db()
     elif sys.argv[1:2] == ["--app"]:
-        app_run(retina=sys.argv[2:3] == ["retina"])
+        app_run(sys.argv[2] if len(sys.argv) > 2 else "")
     else:
         main()
