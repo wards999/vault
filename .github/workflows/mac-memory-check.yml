@@ -1,0 +1,33 @@
+# One-off check, run by hand from the Actions tab (or `gh workflow run mac-memory-check.yml`), or by
+# pushing to the mac-memory-check branch: where Vault's memory goes on macOS (see tools/mac_memory_check.py).
+# About 3 Mac minutes (counted x10 against the free monthly allowance).
+name: Mac memory check
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [mac-memory-check]
+
+jobs:
+  check:
+    runs-on: macos-14
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-python@v6
+        with:
+          python-version: "3.13"
+      - name: Install
+        run: python -m pip install --quiet -r requirements.txt
+      - name: Check memory
+        run: python tools/mac_memory_check.py 2>&1 | tee memory.txt
+      - name: Results as annotations (readable through the API, without the logs)
+        if: always()
+        run: |
+          python - <<'EOF'
+          lines = open("memory.txt").read().splitlines()
+          for i in range(0, len(lines), 60):
+              text = "%0A".join(l.replace("%", "%25") for l in lines[i:i + 60])
+              print(f"::notice title=memory {i // 60 + 1}::{text}")
+          EOF
+          cat memory.txt >> "$GITHUB_STEP_SUMMARY"
