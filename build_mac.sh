@@ -15,6 +15,7 @@ PYTHON=${PYTHON:-$( [ -x .venv/bin/python ] && echo .venv/bin/python || echo pyt
 "$PYTHON" -c "import systemlock; w = systemlock.MacWatcher(lambda: None); print('Lock-with-Mac support: OK')"
 
 # Pillow is only used by PyInstaller here (to turn the PNG into a .icns); keep it out of the app.
+# setuptools (about 0.9 MB) is only imported by cffi's code for compiling C extensions.
 "$PYTHON" -m PyInstaller vault.py \
     --name Vault \
     --windowed \
@@ -32,6 +33,7 @@ PYTHON=${PYTHON:-$( [ -x .venv/bin/python ] && echo .venv/bin/python || echo pyt
     --exclude-module scipy \
     --exclude-module colorthief \
     --exclude-module tkinter \
+    --exclude-module setuptools \
     --osx-bundle-identifier io.github.vault-keepass \
     --specpath build \
     --distpath dist \

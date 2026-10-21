@@ -14,6 +14,7 @@ if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 # --windowed: no console window. PIL/numpy/scipy/colorthief are optional extras of the UI
 # library (and Pillow is only used by tools\make_icon.py), so keep them out of the bundle.
+# setuptools (about 0.9 MB) is only imported by cffi's code for compiling C extensions.
 & $python -m PyInstaller vault.py `
     --name Vault `
     --windowed `
@@ -28,6 +29,7 @@ if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
     --exclude-module scipy `
     --exclude-module colorthief `
     --exclude-module tkinter `
+    --exclude-module setuptools `
     --specpath build `
     --distpath dist `
     --workpath build
