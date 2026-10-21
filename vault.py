@@ -3416,15 +3416,19 @@ class VaultView(QWidget):
         if e and e["url"]:
             QDesktopServices.openUrl(QUrl.fromUserInput(e["url"]))
 
+    def _new_entry_action(self):
+        """New entry (New note in Notes), for the list's right-click menus."""
+        kind = "note" if self.folder == NOTES else "entry"
+        action = Action(FIF.ADD, f"New {kind}", triggered=self.new_entry)
+        action.setShortcut(QKeySequence("Ctrl+N"))
+        return action
+
     def _context_menu(self, pos):
         index = self.table.indexAt(pos)
         if not index.isValid():  # empty space below the entries: New entry (New note in Notes)
             if self._editable():  # (an edit in progress is finished first, as with the button)
-                kind = "note" if self.folder == NOTES else "entry"
                 menu = RoundMenu(parent=self)
-                action = Action(FIF.ADD, f"New {kind}", triggered=self.new_entry)
-                action.setShortcut(QKeySequence("Ctrl+N"))
-                menu.addAction(action)
+                menu.addAction(self._new_entry_action())
                 menu.exec(self.table.viewport().mapToGlobal(pos), ani=False)
             return
         self.table.selectRow(index.row())
@@ -3454,6 +3458,7 @@ class VaultView(QWidget):
             menu.addAction(totp_action)
         if self._editable():
             menu.addSeparator()
+            menu.addAction(self._new_entry_action())
             menu.addAction(Action(star_icon(not e["favourite"]),
                                   "Remove from Favourites" if e["favourite"] else "Add to Favourites",
                                   triggered=self.toggle_favourite))
