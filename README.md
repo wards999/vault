@@ -4,6 +4,12 @@ A simple, modern password manager for KeePass databases (`.kdbx`), for Windows a
 with the same file as KeePass and KeePassXC, for example one kept in Google Drive and used from
 several computers.
 
+![Vault's list of entries, with the selected entry's details beside it](docs/main.png)
+
+![The details below the list instead, which then shows columns](docs/below.png)
+
+![Adding an entry, with the password generator's options shown](docs/new-entry.png)
+
 ## Download and run
 
 Get the latest version from the [Releases page](https://github.com/wards999/vault/releases). There's
