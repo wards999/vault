@@ -1,0 +1,3 @@
+# Tools the builds use (on top of requirements.txt); their exact versions are in requirements-lock.txt
+pyinstaller
+pillow  # only for turning the PNG icon into a .icns on macOS; kept out of the app

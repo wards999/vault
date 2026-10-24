@@ -16,8 +16,10 @@ on:
     tags: ["v*"]
   workflow_dispatch:
 
+# Read-only by default: the build jobs run third-party installers and must not be able to change the
+# repository or its releases. Only the release job (which runs no installers) can write.
 permissions:
-  contents: write  # lets the release job publish releases
+  contents: read
 
 jobs:
   version:
@@ -93,6 +95,8 @@ jobs:
     needs: [version, windows, macos]
     if: ${{ !cancelled() && needs.version.outputs.release == 'true' && needs.windows.result == 'success' && needs.macos.result == 'success' }}
     runs-on: ubuntu-latest
+    permissions:
+      contents: write  # creates the tag and the GitHub Release
     steps:
       - uses: actions/download-artifact@v6
         with:

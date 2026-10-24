@@ -7,9 +7,8 @@ $ErrorActionPreference = "Stop"
 Set-Location $PSScriptRoot
 $python = if (Test-Path ".\.venv\Scripts\python.exe") { ".\.venv\Scripts\python.exe" } else { "python" }  # CI has no venv
 
-& $python -m pip install --quiet --upgrade pyinstaller
-if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
-& $python -m pip install --quiet -r requirements.txt
+# Exact versions of everything (PyInstaller included), so a build only changes when the lock file does
+& $python -m pip install --quiet -r requirements-lock.txt
 if ($LASTEXITCODE -ne 0) { throw "pip install failed" }
 
 # --windowed: no console window. PIL/numpy/scipy/colorthief are optional extras of the UI

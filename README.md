@@ -88,7 +88,11 @@ Then choose your database file, type your master password and click **Unlock**.
 - **Tests:** `python tests/run_all.py` (or `python tests/run_all.py health lock` for some of them). Each
   test runs in its own process with made-up test databases, temporary settings and backups in a
   temporary folder; your real settings and databases are never touched. Install the extras with
-  `pip install -r tests/requirements.txt`; KeePassXC is used to cross-check files when it's installed.
+  `pip install -r requirements-lock.txt`; KeePassXC is used to cross-check files when it's installed.
+- **Package versions:** builds and tests install the exact versions in `requirements-lock.txt`, so a
+  release only changes when that file does. To update them, change `requirements.txt`,
+  `requirements-build.txt` or `tests/requirements.txt` if needed, then run the command at the top of
+  `requirements-lock.txt` (it needs [uv](https://docs.astral.sh/uv/)) and commit the new lock file.
   GitHub Actions runs them on every push to main, and before building a release.
 - **Release:** set `VERSION` in `vault.py`, commit and push to main. GitHub Actions sees a version
   with no release yet, runs the tests, builds both apps, then creates the tag `v<VERSION>` and

@@ -7,8 +7,8 @@ set -euo pipefail
 cd "$(dirname "$0")"
 PYTHON=${PYTHON:-$( [ -x .venv/bin/python ] && echo .venv/bin/python || echo python3 )}
 
-"$PYTHON" -m pip install --quiet --upgrade pyinstaller pillow
-"$PYTHON" -m pip install --quiet -r requirements.txt
+# Exact versions of everything (PyInstaller included), so a build only changes when the lock file does
+"$PYTHON" -m pip install --quiet -r requirements-lock.txt
 # Touch ID (Quick Unlock) needs Apple's LocalAuthentication framework via pyobjc: fail early if it's missing.
 "$PYTHON" -c "import quickunlock; quickunlock.TouchID(); print('Touch ID support: OK')"
 # Locking with the Mac (screen lock / sleep) needs AppKit and Foundation via pyobjc.
