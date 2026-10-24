@@ -1,10 +1,11 @@
-"""Makes the README's screenshots (docs/*.png) from a made-up demo database.
+"""Makes the README's screenshots (docs/*.png, light and dark) from a made-up demo database.
 
 Usage (from the repo folder):  python tools/screenshots.py
 
 Settings, backups and the demo database go to a temporary folder, never the real ones.
 """
 import os
+import subprocess
 import sys
 import tempfile
 from pathlib import Path
@@ -55,7 +56,15 @@ def demo_db(path):
     kp.save()
 
 
+THEMES = {"Light": "", "Dark": "-dark"}  # theme: file name suffix
+
+
 def main():
+    if len(sys.argv) < 2:  # each theme in a fresh copy of this script (one ends with the editor open)
+        for theme in THEMES:
+            subprocess.run([sys.executable, __file__, theme], check=True)
+        return
+    theme = sys.argv[1]
     OUT.mkdir(exist_ok=True)
     db_path = WORK / "Demo.kdbx"
     demo_db(db_path)
@@ -63,10 +72,11 @@ def main():
     app = QApplication(sys.argv)
     import vault
     import store
-    vault.setTheme(vault.Theme.LIGHT)
 
+    vault.apply_theme(theme)  # before the window, so it's drawn in the theme from the start
     w = vault.MainWindow()
-    w.setMicaEffectEnabled(False)
+    w.setMicaEffectEnabled(False)  # (apply_theme(theme, w) would turn Mica on: a see-through grab)
+    w.setCustomBackgroundColor(*vault.DEFAULT_BACKGROUNDS)
     w.resize(1200, 720)
     w.show()
     QTest.qWaitForWindowExposed(w)
@@ -75,12 +85,13 @@ def main():
     w.saver.attach(db)
     w.locked = False
     v = w.vault
-    QTest.qWait(500)
+    QTest.qWait(1500)
 
     def shot(name):
         QTest.qWait(400)
-        w.grab().save(str(OUT / name))
-        print("saved", OUT / name, flush=True)  # (os._exit below skips flushing)
+        path = OUT / name.replace(".png", THEMES[theme] + ".png")
+        w.grab().save(str(path))
+        print("saved", path, flush=True)  # (os._exit below skips flushing)
 
     # 1. The list, with an entry's details beside it
     row = next(r for r in range(v.model.rowCount()) if v.model.index(r, 0).data() == "Code hosting")
